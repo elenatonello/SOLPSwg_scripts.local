@@ -1,12 +1,26 @@
 #!/usr/bin/env python3
 """b2state_io.py
 
-Provides the B2StateIO helper class for reading/writing minimal
-SOLPS `b2fstate` and `b2fgmtry` text files.
+Library (not a command-line tool) with the B2StateIO helper class for reading and
+writing SOLPS `b2fstate` / `b2fgmtry` formatted text files, structured and unstructured.
+Imported by generate_initialState_us.py and plot_b2fstate_us.py.
 
-This module is intended for import by other scripts (e.g. the
-`generate_initialState_us.py` CLI) so the parsing/writing logic can be
-reused without duplicating code.
+File format ("cf" files): an optional first line starting with VERSION, then blocks made of a
+label line (`*cf: <type> <count> <name>`, or just the name) followed by the values, several per
+line. Reals may use a Fortran `D` exponent. Multi-dimensional arrays are stored in Fortran
+(column-major) order, hence every reshape here uses order='F': an unstructured field of
+species is (nCv, ns), a structured one (nx+2, ny+2[, ns]).
+
+Main entry points (all methods of B2StateIO):
+  read_b2fgmtry_us / read_b2fgmtry_st   cell-centre coordinates cvX, cvY of an unstructured /
+                                        structured b2fgmtry (structured: mean of the 4 corners)
+  read_b2fstate_us / read_b2fstate_st   plasma state: na, ne, ua, te, ti, tn, po, species data
+  parse_b2fstate_template               split any cf file into labelled blocks (lossless)
+  write_from_template                   write a new unstructured b2fstate by replacing selected
+                                        arrays of a template and copying everything else verbatim
+  read_flux_tubes, smooth_along_tubes   flux-tube cell lists of an unstructured b2fgmtry and
+                                        Gaussian smoothing of a field along them
+  nearest_map                           nearest-neighbour map between two sets of (R, Z) points
 """
 from __future__ import annotations
 import re
@@ -15,12 +29,19 @@ import numpy as np
 
 
 class B2StateIO:
-    """Helper class providing minimal SOLPS b2fstate/gmtry read/write.
+    """Helper class providing minimal SOLPS b2fstate/b2fgmtry read/write (see the module docstring).
 
-    Methods match the previous standalone functions used by the CLI.
+    Two kinds of file are handled; method names end in `_us` (unstructured: flat arrays over nCv cells)
+    or `_st` (structured: arrays on the (nx+2, ny+2) grid including the guard cells).
     """
 
     def read_numbers_after(self, text: str, label: str, count: int):
+        """Return the `count` numbers that follow `label` in `text`, as a list of floats.
+
+        The label is searched at the start of a line first, then anywhere after whitespace. Raises
+        ValueError if it is missing or followed by fewer than `count` numbers. Used by the structured
+        readers and by read_b2fgmtry_us; read_b2fstate_us and read_flux_tubes use parse_b2fstate_template.
+        """
         # search for the label anchored at the start of a line to avoid
         # accidental matches in free-form header text (e.g. filenames)
         # 1) try strict match at start of line (most robust)
@@ -45,6 +66,7 @@ class B2StateIO:
         return out
 
     def read_b2fgmtry_us(self, path: Path):
+        """Unstructured b2fgmtry -> dict with nCv, nFc, cvX, cvY (cell centres, m), and `version` if the file has a VERSION line."""
         txt = path.read_text()
         firstline = txt.splitlines()[0] if txt.splitlines() else ''
         dims = self.read_numbers_after(txt, 'nCi,nCg,nCv,nFc,nVx,nFs,nFt', 7)
@@ -56,9 +78,18 @@ class B2StateIO:
         cvY = self.read_numbers_after(txt, 'cvY', nCv)
         gmtry['cvX'] = np.array(cvX)
         gmtry['cvY'] = np.array(cvY)
+        try:
+            gmtry['cvVol'] = np.array(self.read_numbers_after(txt, 'cvVol', nCv))
+        except ValueError:
+            pass
         return gmtry
 
     def read_b2fgmtry_st(self, path: Path):
+        """Structured b2fgmtry -> dict with nx, ny, nCv=(nx+2)*(ny+2), cvX, cvY.
+
+        Cell centres are the mean of the four corners crx/cry, flattened in Fortran order so that
+        index i + (nx+2)*j matches the flattening of the structured b2fstate arrays.
+        """
         txt = path.read_text()
         dims = self.read_numbers_after(txt, 'nx,ny', 2)
         nx, ny = [int(x) for x in dims]
@@ -74,6 +105,8 @@ class B2StateIO:
         return {'nCv': cvX.size, 'cvX': cvX, 'cvY': cvY, 'nx': nx, 'ny': ny}
 
     def read_b2fstate_st(self, path: Path):
+        """Structured b2fstate -> dict (na, ua: (nx+2, ny+2, ns); ne, te, ti, tn, po: (nx+2, ny+2);
+        zamin, zamax, zn, am: (ns,)). tn is zeros if the file has none."""
         txt = path.read_text()
         firstline = txt.splitlines()[0] if txt.splitlines() else ''
         version = ''
@@ -103,7 +136,12 @@ class B2StateIO:
         return out
 
     def read_b2fstate_us(self, path: Path):
-        """Read an unstructured b2fstate (fields are flat over nCv cells)."""
+        """Read an unstructured b2fstate (fields are flat over nCv cells).
+
+        Returns a dict with na, ua (nCv, ns); ne, te, ti, tn, po (nCv,); zamin, zamax, zn, am (ns,); and
+        nCv, nFc, ns, version. tn is a copy of ti if the file has none. Raises ValueError if the
+        'nCv,nFc,ns' header is missing or an array has the wrong size.
+        """
         version_line, blocks = self.parse_b2fstate_template(path)
         by_label = {b[0].strip().split()[-1]: b[1] for b in blocks}
         if 'nCv,nFc,ns' not in by_label or len(by_label['nCv,nFc,ns']) < 3:
@@ -160,6 +198,60 @@ class B2StateIO:
             closed.append(n > 2 and (min(t[0], t[-1]) + 1, max(t[0], t[-1]) + 1) in face_pairs)
         return tubes, closed
 
+    def vla_inward_sign(self, path: Path):
+        """Which way does a POSITIVE anomalous radial velocity (vla, parm_vla) point on this mesh?
+
+        B2.5 builds the radial face coefficient as fcS*fcQalf(:,1)*vla and counts a flux positive
+        from fcCv(:,1) to fcCv(:,2), so the direction of +vla is set by the geometry, not by the
+        input. This evaluates sign(fcQalf_y * dpsi(fcCv1 -> fcCv2)) over all radial faces (faces
+        between two different flux tubes), with psi taken per cell as the mean of vxFpsi over its
+        vertices, and compares it with the direction towards the core (the closed flux tubes).
+
+        Returns (sign, consistency): sign is +1 if positive vla points towards the core, -1 if it
+        points away from it, so `sign * speed` is the parm_vla that gives an inward pinch `speed`.
+        `consistency` is the fraction of radial faces that agree with that sign (1.0 on a clean mesh).
+        """
+        _, blocks = self.parse_b2fstate_template(path)
+        d = {b[0].strip().split()[-1]: b[1] for b in blocks}
+        for key in ('nCi,nCg,nCv,nFc,nVx,nFs,nFt', 'cvVxP', 'cvVx', 'vxFpsi', 'fcCv', 'fcQalf'):
+            if key not in d:
+                raise ValueError(f"{path}: '{key}' not found; cannot determine the vla direction")
+        dims = d['nCi,nCg,nCv,nFc,nVx,nFs,nFt'].astype(int)
+        nCv, nFc = int(dims[2]), int(dims[3])
+        tubes, closed = self.read_flux_tubes(path)
+        if not any(closed):
+            raise ValueError(f"{path}: no closed flux tubes (core rings), cannot define 'inward'")
+        # cvVxP: 1-based start offsets (first nCv) then vertex counts (last nCv)
+        ptr = d['cvVxP'].astype(int)
+        start, count = ptr[:nCv] - 1, ptr[nCv:]
+        vx = d['cvVx'].astype(int) - 1
+        psiv = np.asarray(d['vxFpsi'], dtype=float)
+        cpsi = np.full(nCv, np.nan)
+        for c in range(nCv):
+            if count[c] > 0:
+                cpsi[c] = psiv[vx[start[c]:start[c] + count[c]]].mean()
+        tube = -np.ones(nCv, dtype=int)
+        core = np.zeros(nCv, dtype=bool)
+        for i, (t, c) in enumerate(zip(tubes, closed)):
+            tube[t] = i
+            core[t] = c
+        to_core = np.sign(np.nanmean(cpsi[~core & (tube >= 0)]) - np.nanmean(cpsi[core]))  # psi grows away from the core?
+        to_core = -to_core                                                                 # direction of psi towards the core
+        fc = d['fcCv'].astype(int).reshape((nFc, 2), order='F') - 1
+        qy = np.asarray(d['fcQalf'], dtype=float).reshape((nFc, 2), order='F')[:, 1]
+        c1, c2 = fc[:, 0], fc[:, 1]
+        ok = (c1 >= 0) & (c2 >= 0) & (c1 < nCv) & (c2 < nCv)
+        k1, k2 = np.clip(c1, 0, nCv - 1), np.clip(c2, 0, nCv - 1)
+        rad = ok & (tube[k1] >= 0) & (tube[k2] >= 0) & (tube[k1] != tube[k2])
+        e = np.sign(qy * (cpsi[k2] - cpsi[k1]))[rad]
+        e = e[e != 0]
+        if e.size == 0 or to_core == 0:
+            raise ValueError(f"{path}: could not determine the radial direction (no usable radial faces)")
+        pos_dir = 1.0 if (e > 0).sum() >= (e < 0).sum() else -1.0   # +vla runs towards increasing psi if +1
+        sign = 1 if pos_dir == to_core else -1
+        consistency = float(max((e > 0).sum(), (e < 0).sum()) / e.size)
+        return sign, consistency
+
     @staticmethod
     def smooth_along_tubes(values, tubes, closed, sigma, log=False):
         """Gaussian-smooth `values` (nCv,) or (nCv, k) along each flux tube.
@@ -199,6 +291,10 @@ class B2StateIO:
         return out[:, 0] if squeeze else out
 
     def nearest_map(self, src_xy: np.ndarray, dst_xy: np.ndarray, chunk: int = 2000):
+        """Index into `src_xy` (N, 2) of the nearest source point for every row of `dst_xy` (M, 2).
+
+        Plain Euclidean distance in (R, Z); brute force, done in chunks of `chunk` destination points.
+        """
         # chunk over destination points so memory stays O(chunk * nSrc);
         # a dense nDst x nSrc matrix is prohibitive for two unstructured meshes
         idx = np.empty(len(dst_xy), dtype=np.intp)
@@ -210,6 +306,14 @@ class B2StateIO:
         return idx
 
     def parse_b2fstate_template(self, path: Path):
+        """Split a cf file (b2fstate or b2fgmtry) into its blocks, keeping the original text.
+
+        Returns (version_line, blocks); version_line is '' if the first line does not start with
+        VERSION. Each block is a tuple (label_line, values, raw_lines): `label_line` is the line holding
+        the name (the name is its last token), `values` the numbers as a float array (or the text for a
+        character block), `raw_lines` the original value lines, so that write_from_template can copy
+        untouched blocks verbatim. Integer arrays are returned as floats too.
+        """
         txt = path.read_text()
         lines = txt.splitlines()
         version_line = ''
@@ -260,6 +364,8 @@ class B2StateIO:
         return version_line, blocks
 
     def _format_real_fortran(self, val: float, width: int = 20, prec: int = 13) -> str:
+        """Format a float as a Fortran-style E number of fixed width (currently unused; the writer
+        uses its own format_to_width, which keeps the width of the number it replaces)."""
         s = f"{val:.{prec}E}"
         s = re.sub(r'([E][+-])(\d+)$', lambda m: m.group(1) + m.group(2).zfill(3), s)
         if len(s) < width:
@@ -268,7 +374,16 @@ class B2StateIO:
             s = s[-width:]
         return s
 
-    def write_from_template(self, path: Path, version_line: str, blocks, state_us: dict, gmtry_us: dict):
+    def write_from_template(self, path: Path, version_line: str, blocks, state_us: dict, gmtry_us: dict,
+                            only=None):
+        """Write an unstructured b2fstate to `path` from a template read with parse_b2fstate_template.
+
+        The arrays na, ne, ua, te, ti, tn, po of `state_us` (shapes as returned by read_b2fstate_us) replace
+        the same-named blocks of the template, number by number and keeping the column width of each
+        number (so the file layout is unchanged); the 'nCv,nFc,ns' header is updated from `gmtry_us` and
+        the species count. Every other block is copied verbatim. With `only` (a list of names) just
+        those arrays are replaced. Surplus template slots are filled with 0.0.
+        """
         nCv = int(gmtry_us['nCv'])
         nFc = int(gmtry_us.get('nFc', 0))
         ns = int(state_us['na'].shape[1])
@@ -281,6 +396,9 @@ class B2StateIO:
         replacements['ti'] = np.asarray(state_us['ti']).reshape((nCv,), order='F')
         replacements['tn'] = np.asarray(state_us.get('tn', np.zeros_like(state_us['ti']))).reshape((nCv,), order='F')
         replacements['po'] = np.asarray(state_us['po']).reshape((nCv,), order='F')
+        if only is not None:
+            # rewrite only these arrays; every other block of the template is copied verbatim
+            replacements = {k: v for k, v in replacements.items() if k in set(only)}
 
         # match numeric tokens including Fortran D exponent
         number_re = re.compile(r"[-+]?\d*\.?\d+(?:[eEdD][-+]?\d+)?")

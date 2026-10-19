@@ -373,6 +373,8 @@ Script & Purpose \\ \midrule
    Checks a byte-exact read/write round trip first, never overwrites the input unless \code{--inplace} (original kept as \code{.orig}),
    refuses \code{-o} equal to the input. \code{--angles keep} (default) leaves $\qgam$ alone and recomputes $\qbet$ only on raised faces;
    \code{--angles prep} also overwrites $\qbet,\qgam$ on all wall faces. \code{--scalars-only} stores just \code{Qalfmin}/\code{Qalfmax}.
+   \code{--zbox ZMIN ZMAX} / \code{--box RMIN RMAX ZMIN ZMAX} (repeatable) restrict the modification to wall faces whose midpoint lies in the box;
+   all other faces keep their original $P_{bs}$ and angles. The scalars remain global (see below).
    \code{--dry-run} prints the summary only. Not ported: \code{mod_hc}, \code{set_beta_0}, \code{Qalf_mod_style=1}. \\
 \code{plot_qalf_wall.py} & Maps the wall faces. Default: classes by $\wrk$ (core-type, grazing, band, normal).
    \code{--ref ORIG}: classes from the original file, coloured by whether the prepared file was actually reduced/raised.
@@ -381,6 +383,12 @@ Script & Purpose \\ \midrule
 \code{sketch_qalf_pbs.py} & Regenerates the schematic of Figure~\ref{fig:sketch}. \\
 \bottomrule
 \end{longtable}
+
+\paragraph{The scalars are global.} \code{Qalfmin} and \code{Qalfmax} are single numbers in \code{b2fgmtry}. Restricting the geometry
+change to a region therefore does not restrict the boundary conditions: every wall face with $\wrk<\qmin$ anywhere, modified or not,
+uses the floor $\qmax S$. Raising $\qmax$ for one region raises the floor on all grazing faces; the script lists the unmodified faces whose
+sink changes for this reason. A region-dependent floor can only be obtained through the geometry (for example by moving a face out of the grazing
+branch), not through the scalars.
 
 \paragraph{Reading the plots.} Without \code{--ref} the plot shows the file as the code will see it (the classification of the
 boundary conditions uses the angle-based $\wrk$). With \code{--ref} the plot shows what was done to the file compared with the

@@ -8,6 +8,8 @@ Figure 2 (qalf_bc_regimes.png): what each boundary condition does in the three r
 
 The statements follow the code (b2us_prep.F wall-face block; b2stbc_phys.F branches on w < Qalfmin).
 Usage:  sketch_qalf_regimes.py [outdir]     (default: directory of this script)
+Needs no input files: the three parameter sets are the examples in SETS (edit them to try other values;
+f_red = Pbs_reduce_fac), and PITCH is an example Bpol/B. Background: qalf_pbs_notes.tex / .pdf in this directory.
 """
 import os
 import sys
@@ -180,6 +182,9 @@ def fig_bc(outdir):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ('-h', '--help'):
+        print(__doc__)
+        return
     outdir = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
     fig_regimes(outdir)
     fig_bc(outdir)

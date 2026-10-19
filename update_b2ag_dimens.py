@@ -4,7 +4,8 @@ update_b2ag_dimens.py — (re)write b2ag.dat as the unstructured-grid template,
 with nCi,nFc,nVx filled in from the traduit.out.b2us in the same folder.
 
 This overwrites b2ag.dat entirely (whatever was there before, including the
-old structured "*dimens (nx, ny, nx1, ny1)" format) with:
+old structured "*dimens (nx, ny, nx1, ny1)" format and any parameter you had
+changed in it) with:
 
     *format
         unstructured
@@ -21,6 +22,12 @@ old structured "*dimens (nx, ny, nx1, ny1)" format) with:
     'b2us_prep_Qalfmin'   '0.002'
     'b2us_prep_Pbs_reduce_fac' '1e-6'
     'b2us_prep_set_beta_0'       '1'
+
+NOTE: the b2us_prep_* parameters are written for completeness but have no effect on the
+unstructured (traduit) path, because b2ag does not read them there. To apply the Qalfmin/Qalfmax/
+Pbs_reduce_fac wall-face step to the geometry use modify_b2fgmtry_prep.py on the b2fgmtry.
+The parameter values (Qalfmin 0.002, Qalfmax 0.004, Pbs_reduce_fac 1e-6, ...) are fixed text in TEMPLATE
+in this script; edit it to change them.
 
 Usage:
     update_b2ag_dimens.py DIR                 # writes DIR/b2ag.dat,
@@ -71,6 +78,9 @@ def build_b2ag(nCi, nFc, nVx):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        return
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
 
@@ -91,7 +101,8 @@ def main():
     if b2ag_path.is_file():
         old = b2ag_path.read_text()
         if old.lstrip().startswith("*format") and "unstructured" in old:
-            print(f"{b2ag_path}: already unstructured, updating dimens only")
+            print(f"{b2ag_path}: already unstructured, rewriting it from the template (dimens updated, "
+                  "other parameters reset to the template values)")
         else:
             print(f"{b2ag_path}: not unstructured yet, converting")
     else:

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Lightweight Plotter class mirroring GOAT's plotting structure.
+"""Lightweight Plotter class mirroring GOAT's plotting structure (GOAT: the code of the coupled
+SOLPS-GOAT runs, see doc/goat_inputs_procedure.tex).
 
-Provides a small, modular plotting API built on matplotlib with an
-optional Delaunay triangulation helper (uses SciPy when available).
+Library, not a command-line tool: used by plot_b2fstate_us.py. Provides a small, modular plotting API
+built on matplotlib (one figure with one axes, created on construction) with an optional Delaunay
+triangulation helper (uses SciPy when available). Unlike the other plotting scripts it does not
+select a matplotlib backend; the default one is used.
 """
 from __future__ import annotations
 from pathlib import Path
@@ -27,6 +30,8 @@ class Plotter:
         return self.ax.tripcolor(triang, values, cmap=cmap, shading='flat')
 
     def delaunay(self, x, y):
+        """Triangle vertex indices (n_tri, 3) of the Delaunay triangulation of the points, or None if
+        SciPy is not installed. The triangulation covers the convex hull of the points."""
         try:
             from scipy.spatial import Delaunay
         except Exception:

@@ -13,6 +13,15 @@ Each run is identified by its top-level directory, which must contain
 b2time.nc (or b2mn.exe.dir/b2time.nc). The plot re-reads the file and
 redraws on a fixed interval until the window is closed or you hit Ctrl+C.
 
+Works with b2time.nc from both SOLPS-ITER 3.2.1 and 3.0.9. Differences handled:
+  * 3.2.1 stores the radial coordinate as ds{a,i,l,r} variables inside b2time.nc;
+    3.0.9 only writes it as text files ds{a,i,l,r} in the run directory, which are
+    read instead.
+  * 3.2.1 stores na/dn/vs/vx/vy/dp with a species axis (time, ns, ny); 3.0.9 stores
+    dn/dp/vs/vx/vy without one (time, ny) and has no na3d* at all. Species-less
+    variables are drawn as a single line (and ignore --species); quantities missing
+    from the file are reported once on stderr and skipped.
+
 Usage:
     python watch_omp_profiles.py run_dir1 [run_dir2 ...] [options]
 
@@ -72,12 +81,58 @@ DEFAULT_LOCATION = "omp"
 TIME_VAR_CANDIDATES = ["timesa", "times"]
 EV = 1.602176634e-19
 
+# location suffix -> name of the spatial dimension in b2time.nc
+SPATIAL_DIMS = {"a": "nya", "i": "nyi", "l": "nybl", "r": "nybr"}
+
+_WARNED = set()
+
+
+def warn_once(msg):
+    if msg not in _WARNED:
+        _WARNED.add(msg)
+        print(f"warning: {msg}", file=sys.stderr)
+
 
 def find_b2time(run_dir):
     for candidate in (run_dir / "b2mn.exe.dir" / "b2time.nc", run_dir / "b2time.nc"):
         if candidate.is_file():
             return candidate
     return None
+
+
+def read_ds(ds_nc, b2time_path, run_dir, suffix):
+    """Radial coordinate for the chosen cut: the ds{suffix} variable in b2time.nc
+    (3.2.1) or, failing that, the ds{suffix} text file next to it / in the run
+    directory (3.0.9). Returns None if neither is usable."""
+    var = f"ds{suffix}"
+    if var in ds_nc.variables:
+        return np.asarray(ds_nc.variables[var][:])
+    n_expected = None
+    dim = SPATIAL_DIMS.get(suffix)
+    if dim in ds_nc.dimensions:
+        n_expected = len(ds_nc.dimensions[dim])
+    for folder in (b2time_path.parent, run_dir, run_dir / "b2mn.exe.dir"):
+        path = folder / var
+        if not path.is_file():
+            continue
+        try:
+            ds = np.atleast_1d(np.loadtxt(path))
+        except ValueError:
+            continue
+        if n_expected is not None and ds.shape[0] != n_expected:
+            warn_once(f"{path} has {ds.shape[0]} points but b2time.nc has {n_expected} "
+                      f"along {dim}; ignoring it")
+            continue
+        return ds
+    warn_once(f"no radial coordinate '{var}' in {b2time_path} or as a file under {run_dir}")
+    return None
+
+
+def series_style(sp_idx, run_label):
+    """Linestyle and legend text for one series; sp_idx None = no species axis."""
+    if sp_idx is None:
+        return "-", run_label
+    return LINESTYLES[sp_idx % len(LINESTYLES)], f"{run_label} (species {sp_idx})"
 
 
 def window_mean(values, window):
@@ -132,6 +187,10 @@ def read_species_quantity(ds_nc, base, suffix, window, species_filter, n_spatial
     if prefix not in ds_nc.variables:
         return []
     raw = np.asarray(ds_nc.variables[prefix][:])
+
+    # Convention C: no species axis at all, e.g. 3.0.9 dn3da(time, nya)
+    if raw.ndim == 2:
+        return [(None, window_mean(raw, window))] if raw.shape[1] == n_spatial else []
     if raw.ndim != 3:
         return []
     avg = window_mean(raw, window)
@@ -183,6 +242,11 @@ def read_species_quantity_delta(ds_nc, base, suffix, window, species_filter, n_s
     if prefix not in ds_nc.variables:
         return []
     raw = np.asarray(ds_nc.variables[prefix][:])
+    if raw.ndim == 2:
+        if raw.shape[1] != n_spatial:
+            return []
+        last, prev_avg = last_and_prev_avg(raw, window)
+        return [(None, relative_delta_pct(last, prev_avg))]
     if raw.ndim != 3:
         return []
     last, prev_avg = last_and_prev_avg(raw, window)
@@ -209,7 +273,6 @@ def draw(fig, axes, quantities, run_dirs, labels, species_filter, window, locati
     any_ok = False
     status_bits = []
     suffix, location_label = LOCATIONS[location]
-    ds_var = f"ds{suffix}"
 
     if delta_axes is None:
         delta_axes = [None] * len(axes)
@@ -231,9 +294,9 @@ def draw(fig, axes, quantities, run_dirs, labels, species_filter, window, locati
                 continue
             try:
                 with nc.Dataset(b2time_path) as ds_nc:
-                    if ds_var not in ds_nc.variables:
+                    dsa = read_ds(ds_nc, b2time_path, run_dir, suffix)
+                    if dsa is None:
                         continue
-                    dsa = np.asarray(ds_nc.variables[ds_var][:])
                     order = np.argsort(dsa)
                     nt = None
                     for tvar in TIME_VAR_CANDIDATES:
@@ -244,22 +307,28 @@ def draw(fig, axes, quantities, run_dirs, labels, species_filter, window, locati
                         status_bits.append(f"{label}: {nt if nt is not None else '?'} steps")
 
                     if species_resolved:
-                        for sp_idx, val in read_species_quantity(
-                                ds_nc, base, suffix, window, species_filter, len(dsa)):
-                            ls = LINESTYLES[sp_idx % len(LINESTYLES)]
+                        series = read_species_quantity(
+                            ds_nc, base, suffix, window, species_filter, len(dsa))
+                        if not series and not any(n.startswith(f"{base}{suffix}")
+                                                  for n in ds_nc.variables):
+                            warn_once(f"{base}{suffix} not in {b2time_path}; skipping '{qty}' for {label}")
+                        for sp_idx, val in series:
+                            ls, lab = series_style(sp_idx, label)
                             ax.plot(dsa[order], val[order], color=color, linestyle=ls,
-                                     linewidth=2, label=f"{label} (species {sp_idx})")
+                                    linewidth=2, label=lab)
                             plotted = True
                         if delta_ax is not None:
                             for sp_idx, dval in read_species_quantity_delta(
                                     ds_nc, base, suffix, window, species_filter, len(dsa)):
-                                ls = LINESTYLES[sp_idx % len(LINESTYLES)]
+                                ls, lab = series_style(sp_idx, label)
                                 delta_ax.plot(dsa[order], dval[order], color=color, linestyle=ls,
-                                              linewidth=2, label=f"{label} (species {sp_idx})")
+                                              linewidth=2, label=lab)
                                 delta_plotted = True
                     else:
                         val = read_quantity(ds_nc, base, suffix, window, convert_ev)
-                        if val is not None:
+                        if val is None:
+                            warn_once(f"{base}{suffix} not in {b2time_path}; skipping '{qty}' for {label}")
+                        else:
                             ax.plot(dsa[order], val[order], color=color, linewidth=2, label=label)
                             plotted = True
                         if delta_ax is not None:
@@ -303,7 +372,8 @@ def draw(fig, axes, quantities, run_dirs, labels, species_filter, window, locati
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Live-watch OMP profiles from a running SOLPS-ITER case (reads b2time.nc directly).",
+        description="Live-watch radial profiles (OMP, IMP or a divertor target) from a running SOLPS-ITER "
+                    "case; reads b2time.nc directly and redraws every --interval seconds.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("run_dirs", nargs="+", type=Path,
@@ -320,7 +390,8 @@ def main():
                               "(e.g. ke/ki only at omp/imp) -- missing ones are just skipped.")
     parser.add_argument("--species", nargs="+", type=int, default=None,
                          help="Species indices to plot for species-resolved quantities "
-                              "(default: all found)")
+                              "(default: all found); variables without a species axis "
+                              "(3.0.9) are always plotted")
     parser.add_argument("--window", type=int, default=10,
                          help="Number of most recent timesteps to average over")
     parser.add_argument("--interval", type=float, default=10.0,

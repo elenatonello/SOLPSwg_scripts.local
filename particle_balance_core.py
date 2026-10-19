@@ -1,4 +1,24 @@
 #! /usr/bin/env python
+"""Particle balance error of the CORE region on the STRUCTURED grid (copy of scripts/particle_balance_core.py).
+
+Same idea as particle_balance.py, but only for the core volume region: per element it plots versus time
+    (fna + b2stbr) / max|fnareg|
+with
+    fna    = sum of W * fnareg over the two face regions that bound the core, with opposite signs
+             (SN: face regions 8 = core boundary and 10 = separatrix; W = FULL_XY below), summed over
+             the species of the element
+    b2stbr = B2.5 particle source from EIRENE in volume region 1 (b2stbr_sna_reg[..., 1], the core),
+             summed over the charged states (neutral and, for He and heavier, the fully stripped state
+             are left out)
+There is no b2sext term and dN/dt is not subtracted. Input, window and structured-grid caveat as in
+particle_balance.py (not valid for the wide grid).
+
+Printed per element: name, normalisation, mean of (fna+b2stbr), mean normalised error, mean fna, mean b2stbr.
+Topologies coded: SN, limiter, stellarator island, LFS snowflake, CDN, DDN (no linear).
+
+Usage:
+    particle_balance_core.py
+"""
 from __future__ import print_function
 import netCDF4
 import os
@@ -10,6 +30,10 @@ import sys
 import numpy
 import subprocess
 import re
+
+if any(a in ('-h', '--help') for a in sys.argv[1:]):
+    print(__doc__)
+    sys.exit(0)
 
 if os.access('b2mn.exe.dir/b2tallies.nc', os.R_OK):
     f = netCDF4.Dataset('b2mn.exe.dir/b2tallies.nc','r')

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
 update_spt_input.py — edit the reflection-model blocks (*** 6a) of an EIRENE
-input file, in place, across input.eir / input_avg.eir / input_fin.eir at once.
+input file, in place, across input.eir / input_avg.eir / input_fin.eir /
+input_hybrid.eir at once (those found in the directory). The files are
+rewritten without a backup: keep a copy (or use git) if you may want the
+originals back.
 
 Rules applied to every SURFMOD_* block inside "*** 6a. General data for
 reflection model" (name line + 4 raw numeric lines: ints / material / recyc
@@ -33,7 +36,7 @@ reflection model" (name line + 4 raw numeric lines: ints / material / recyc
 Usage:
     update_spt_input.py DIR                 # auto-finds and edits
                                              # input.eir, input_avg.eir,
-                                             # input_fin.eir in DIR
+                                             # input_fin.eir, input_hybrid.eir in DIR
     update_spt_input.py FILE [FILE ...]     # edits the given files
 """
 import sys
@@ -104,7 +107,7 @@ def process_block(sb, name, log):
                 sb += spt_block(sp)
             log.append(f"    rule 1: T={m.group(1)}K ({temp_c:.1f} degC) -> appended block(s) for {specs}")
 
-    # --- Rule 2: RECYCT <= 0.99 -> append RECYCC D2 1.0 after everything else. ---
+    # --- Rule 2: RECYCT <= 0.99 -> append "RECYCT D2 1.0" after everything else. ---
     # recyct is read from the original recyc line, which is always sb[3]
     # (rule 1 only ever appends lines after this point).
     recyct = recyct_of(sb)
@@ -158,6 +161,9 @@ def process_file(path):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        return
     if len(sys.argv) < 2:
         raise SystemExit(__doc__)
 

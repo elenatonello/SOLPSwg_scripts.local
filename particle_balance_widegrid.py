@@ -1,4 +1,38 @@
 #! /usr/bin/env python
+"""Particle balance of a B2.5 run on the WIDE (unstructured) grid, per element.
+
+On the wide grid the face normal of every boundary face points out of the domain (second cell of the
+face, fcCv(iFc,2), is a guard cell), so a positive fnareg on a boundary region means particles leaving the
+plasma. The balance is therefore
+    - sum_{boundary regions} fnareg + b2stbr + b2sext - dN/dt = 0
+with weight W = -1 on all boundary regions and 0 on internal ones, instead of the +-1 x/y-orientation
+weights of particle_balance.py (valid for the structured grid only). Per element (species of one element
+summed, neutral first):
+    fnareg  face particle flux per face region (b2tallies.nc)
+    b2stbr  EIRENE particle source, whole domain, charged states only (neutral and, for He and heavier, the
+            fully stripped state are left out)
+    b2sext  external particle source, whole domain
+    N       ion content (nareg of the charged states; the neutral is excluded, as for b2stbr);
+            dN/dt is its time derivative (numpy.gradient)
+
+Three panels versus time, one line per element:
+    1. (fna + b2stbr + b2sext) / max|fnareg|            normalised error, dN/dt neglected
+    2. (fna + b2stbr + b2sext - dN/dt) / max|fnareg|    same with dN/dt (the proper balance)
+    3. (fna + b2stbr + b2sext - dN/dt) / gross(t)       instantaneous error relative to the gross throughput,
+                                                        gross = sum of the absolute sizes of all terms
+The printed table gives, per element, the means over the last 10% of the outputs (<flux in>, <b2stbr+b2sext>,
+<dN/dt>) and the three errors above (err/norm, err/norm with dN/dt, err/gross(t) with dN/dt).
+
+The boundary regions are the face regions whose faces all have a guard cell as second cell, read from
+b2fgmtry (the file given as argument, else ./b2fgmtry, baserun/b2fgmtry or ../baserun/b2fgmtry); a warning is
+printed for regions with mixed orientation. If no b2fgmtry is found the SN defaults (SN_BOUNDARY) are used
+WITHOUT checking the topology, so give the file for any other grid.
+Input: b2mn.exe.dir/b2tallies.nc if readable, else ./b2tallies.nc. A window is opened (TkAgg, needs a display); if DISPLAY
+is not set the figure is saved to particle_balance_widegrid.png in the current directory before the window is requested.
+
+Usage:
+    particle_balance_widegrid.py [b2fgmtry]
+"""
 from __future__ import print_function
 import netCDF4
 import os
@@ -10,18 +44,9 @@ import sys
 import numpy
 import re
 
-# Particle balance for wide-grid runs.
-#
-# On the wide grid the face normal of every boundary face points out of the domain
-# (second cell of the face, fcCv(iFc,2), is a guard cell), so a positive fnareg on a
-# boundary region means particles leaving the plasma. The balance is therefore
-#     - sum_{boundary regions} fnareg + b2stbr + b2sext - dN/dt = 0
-# with weight -1 on all boundary regions and 0 on internal ones, instead of the +-1
-# x/y-orientation weights of particle_balance.py (valid for the structured grid only).
-#
-# The boundary regions are read from b2fgmtry (in the run directory or in baserun/) when
-# available, otherwise the SN defaults are used.
-# Usage: particle_balance_widegrid.py [b2fgmtry]
+if any(a in ('-h', '--help') for a in sys.argv[1:]):
+    print(__doc__)
+    sys.exit(0)
 
 SN_BOUNDARY = [1,4,7,8,9,11,12,13]   # targets, PFR walls, core boundary, main chamber walls
 

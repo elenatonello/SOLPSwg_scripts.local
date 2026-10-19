@@ -3,12 +3,20 @@
 Standalone script: Generate uinput.crr from traduit.out.b2us
 
 Usage:
-    python traduit_to_uinput_crr.py <traduit_file> [output_file]
+    traduit_to_uinput_crr.py <traduit_file> [output_file]
 
 If output_file is omitted, defaults to 'uinput.crr' in the same directory as traduit_file.
 
 The script extracts grid counts (nCi, nFc, nCg) from the traduit header and generates
-a pseudo carre.out file suitable for uinp input in coupled EIRENE cases.
+a pseudo carre.out file suitable for uinp input in coupled EIRENE cases. The synthetic
+file has no real geometry: it only contains cell/face flags arranged so that uinp's uincrr
+reproduces the grid counts of the unstructured grid.
+
+The number of regions is taken from the largest cvReg of the interior cells (nnreg = max(cvReg) - 1).
+Only a single-null (SN) topology, nnreg = 3, is supported; any other value is an error. The
+mesh parameters nptseg/npr and the per-region dimensions (nprad = 25, 3, 3) are fixed values
+in write_uinput_crr (AUG-representative defaults, they are not derived from the grid).
+Run without arguments or with -h/--help to print this text.
 """
 
 import re
@@ -104,6 +112,7 @@ def write_uinput_crr(n_cells_internal: int,
         n_cells_internal: nCi from traduit (internal cells)
         n_cells_total: nCv from traduit (internal + guard cells)
         n_faces: nFc from traduit (total faces)
+        nnreg: number of regions (3 for SN)
         nptseg: toroidal segment counts per region (default: AUG-representative)
         npr: radial/poloidal point counts per region (default: AUG-representative)
         
@@ -188,9 +197,9 @@ def write_uinput_crr(n_cells_internal: int,
 
 def main():
     """Entry point: parse arguments and generate uinput.crr."""
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 2 or sys.argv[1] in ('-h', '--help'):
         print(__doc__)
-        sys.exit(1)
+        sys.exit(1 if len(sys.argv) < 2 else 0)
     
     traduit_path = Path(sys.argv[1])
     

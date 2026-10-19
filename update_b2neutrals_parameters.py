@@ -19,12 +19,15 @@ Two independent edits, either or both may be requested:
      Set the gas puff flux (particles/s) in userfluxparm(1,1), i.e. the
      column of that array matching the stratum flagged 'C' (constant
      flux) in crcstra=. In the reference file
-     (runs/TCV/TCV62807/SILO/noDRIFTS_330008/b2.neutrals.parameters)
-     that is stratum 17 (crcstra index 16, 0-based), currently
+     (path/to/your/run/dir/b2.neutrals.parameters)
+     that is stratum 17 (crcstra index 16, 0-based), originally
      3.000E+22. The 'C' column is auto-detected from crcstra= on every
      run (not hardcoded), and the script refuses to guess if crcstra
      has zero or more than one 'C' entries — pass --puff-column
      (1-based) to disambiguate in that case.
+
+The file is edited in place and NO backup is kept: keep a copy (or use git) if you may want the
+original back.
 
 Usage:
     update_b2neutrals_parameters.py DIR  [--EIRENE_MOD N] [--GASPUFF X] [--puff-column N]

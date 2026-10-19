@@ -10,7 +10,14 @@ Two views:
     default : every face is drawn as a coloured line segment (colour = signed flux)
     --div   : net flux OUT of each cell (sum over its faces), drawn on the cell polygons
 
-Run from the run directory (same defaults as plot_plasmastate.py).
+Colours: signed flux on a symmetric-log scale (linear within +-1e-6 of the largest |value|, or of --vmax);
+red/blue = positive/negative. --div sums, for each cell, the flux of the faces it owns as first cell
+(+) and as second cell (-), i.e. the net flux leaving the cell (> 0: net outflow); only interior cells are
+drawn (guard cells have no polygon). The terminal shows the largest |value| and its face/cell index (0-based).
+
+Run from the run directory (same defaults as plot_plasmastate.py: plasmastate files in ./b2mn.exe.dir,
+geometry from ./b2fgmtry or ../baserun/b2fgmtry). Without 'ids' every snapshot is drawn, one window each;
+if a window cannot be opened (no display) the figures are written as PNG to ./plasmastate_2d/ instead.
 
 Usage:
     plot_plasmastate_flux.py 0011                       # fhi on faces
@@ -54,18 +61,25 @@ def main():
     gm = os.path.join(here, 'b2fgmtry')
     if not os.path.exists(gm):
         gm = os.path.join(here, '..', 'baserun', 'b2fgmtry')
-    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('ids', nargs='*', help="plasmastate suffixes, e.g. 0012 (default: all)")
-    ap.add_argument('-q', '--quantity', default='fhi')
+    ap.add_argument('-q', '--quantity', default='fhi',
+                    help="comma-separated face fluxes, NAME or NAME:IDX for species-resolved ones "
+                         "(default: fhi)")
     ap.add_argument('--div', action='store_true', help='net outflow per cell instead of face lines')
     ap.add_argument('--comp', type=int, choices=(0, 1), default=None,
                     help='use only this flux component (default: comp0 + comp1)')
-    ap.add_argument('-d', '--dir', default=os.path.join(here, 'b2mn.exe.dir'))
-    ap.add_argument('-g', '--geometry', default=gm)
-    ap.add_argument('-o', '--out', default=os.path.join(here, 'plasmastate_2d'))
+    ap.add_argument('-d', '--dir', default=os.path.join(here, 'b2mn.exe.dir'),
+                    help='directory with the plasmastate.XXXX files (default: ./b2mn.exe.dir)')
+    ap.add_argument('-g', '--geometry', default=gm,
+                    help='b2fgmtry of the (unstructured) grid (default: ./b2fgmtry, else ../baserun/b2fgmtry)')
+    ap.add_argument('-o', '--out', default=os.path.join(here, 'plasmastate_2d'),
+                    help='output directory for --save (default: ./plasmastate_2d)')
     ap.add_argument('--save', action='store_true', help='write PNGs to --out instead of showing figures')
     ap.add_argument('--vmax', type=float, default=None, help='symmetric colour limit [file units]')
-    ap.add_argument('--zoom', nargs=4, type=float, metavar=('XMIN', 'XMAX', 'YMIN', 'YMAX'))
+    ap.add_argument('--zoom', nargs=4, type=float, metavar=('XMIN', 'XMAX', 'YMIN', 'YMAX'),
+                    help='plot window in m: R range then Z range (default: whole mesh)')
     a = ap.parse_args()
 
     files = (sorted(glob.glob(os.path.join(a.dir, 'plasmastate.*'))) if not a.ids else

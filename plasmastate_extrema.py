@@ -2,12 +2,18 @@
 """Maximum and/or minimum of plasmastate quantities as a function of time.
 
 Reads every plasmastate.XXXX snapshot, takes the max/min of the chosen quantities over the
-mesh cells and reports value and location (R, Z) versus the simulation time stored in the file.
+mesh cells (those with a polygon in b2fgmtry, i.e. the interior cells; optionally restricted with --box)
+and reports value and location (R, Z) versus the simulation time stored in the file. Temperatures are
+in eV, other quantities in the units listed by `plot_plasmastate.py --list`/FIELDS.
 Quantity syntax is the one of plot_plasmastate.py (NAME, or NAME:IDX for species-resolved
 fields; see `plot_plasmastate.py --list`).
 
 Run from the run directory (plasmastate files in ./b2mn.exe.dir, geometry from ./b2fgmtry or
-../baserun/b2fgmtry). Prints a table, and opens a plot (use --save to write a PNG instead).
+../baserun/b2fgmtry, species charges from ./b2fstate if present). Prints a table (one block per
+quantity and statistic: snapshot id, time, value, R, Z), and opens a plot with one panel per unit
+(quantities with the same unit share axes; dashed line = minimum). Use --save to write the PNG
+(extrema_<quantities>_<stat>.png in --out) instead of opening a window; without a display it is
+opened in VS Code. All snapshots found are used (there is no snapshot selection).
 
 Usage:
     plasmastate_extrema.py                          # max of te,ti
@@ -33,17 +39,22 @@ def main():
     gm = os.path.join(here, 'b2fgmtry')
     if not os.path.exists(gm):
         gm = os.path.join(here, '..', 'baserun', 'b2fgmtry')
-    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('-q', '--quantity', default='te,ti',
                     help='comma-separated fields, NAME or NAME:IDX (default: te,ti)')
-    ap.add_argument('--stat', choices=('max', 'min', 'both'), default='max')
+    ap.add_argument('--stat', choices=('max', 'min', 'both'), default='max',
+                    help='which extremum to report (default: max)')
     ap.add_argument('--box', nargs=4, type=float, metavar=('RMIN', 'RMAX', 'ZMIN', 'ZMAX'),
                     help='only consider cells whose centre lies inside this R,Z box')
-    ap.add_argument('--csv', help='write the table to this file')
+    ap.add_argument('--csv', help='also write the table to this CSV file')
     ap.add_argument('--log', action='store_true', help='log y axis')
-    ap.add_argument('-d', '--dir', default=os.path.join(here, 'b2mn.exe.dir'))
-    ap.add_argument('-g', '--geometry', default=gm)
-    ap.add_argument('-o', '--out', default=os.path.join(here, 'plasmastate_2d'))
+    ap.add_argument('-d', '--dir', default=os.path.join(here, 'b2mn.exe.dir'),
+                    help='directory with the plasmastate.XXXX files (default: ./b2mn.exe.dir)')
+    ap.add_argument('-g', '--geometry', default=gm,
+                    help='b2fgmtry of the (unstructured) grid (default: ./b2fgmtry, else ../baserun/b2fgmtry)')
+    ap.add_argument('-o', '--out', default=os.path.join(here, 'plasmastate_2d'),
+                    help='output directory for --save (default: ./plasmastate_2d)')
     ap.add_argument('--save', action='store_true', help='write the PNG to --out instead of showing it')
     a = ap.parse_args()
 

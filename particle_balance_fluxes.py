@@ -1,4 +1,28 @@
 #! /usr/bin/env python
+"""Per-region breakdown of the wide-grid particle balance (companion of particle_balance_widegrid.py).
+
+For each element (species of one element summed) it draws two panels versus time:
+    top     fnareg of every boundary face region (raw sign: > 0 = particles leaving the domain); regions with
+            non-zero balance weight are solid lines, with --all the weight-0 (internal) regions are drawn dotted
+    bottom  the balance terms: net inflow (= - sum of the boundary fnareg), b2stbr (EIRENE source, charged
+            states only), b2sext (external source) and the balance error fna + b2stbr + b2sext (black dashed).
+            dN/dt is not included here; see particle_balance_widegrid.py for the full balance.
+The balance weight is -1 on all boundary regions and 0 on internal ones (the face normal of every boundary face
+points out of the domain on the wide grid). The boundary regions are the face regions whose faces all have a
+guard cell as second cell, read from b2fgmtry (the file given as argument, else ./b2fgmtry, baserun/b2fgmtry or
+../baserun/b2fgmtry). Without a b2fgmtry the SN default list is used (as in particle_balance_widegrid.py), WITHOUT checking
+the topology, so give the file for any other grid. Region names (NAMES) are only known for SN; otherwise just the number is shown.
+Also printed, per element: the time average over the last 10% of the outputs of each region flux, of the
+weighted flux sum, b2stbr and b2sext.
+
+Input: b2mn.exe.dir/b2tallies.nc if readable, else ./b2tallies.nc. A window is opened (TkAgg, needs a display); if DISPLAY
+is not set each figure is saved to particle_balance_fluxes_<element>.png in the current directory before the window is requested.
+
+Usage:
+    particle_balance_fluxes.py [b2fgmtry] [element ...] [--all]
+        element   only these elements (e.g. D C); default: all
+        --all     also plot the regions with zero weight
+"""
 from __future__ import print_function
 import netCDF4
 import os
@@ -10,10 +34,9 @@ import sys
 import numpy
 import re
 
-# Plots, per element, the particle flux through each boundary face-based region
-# used by particle_balance_widegrid.py (fnareg summed over the species of the element), together
-# with the weighted sum and the source terms.
-# Usage: particle_balance_fluxes.py [b2fgmtry] [element ...] [--all]   (--all: also plot regions with zero weight)
+if any(a in ('-h', '--help') for a in sys.argv[1:]):
+    print(__doc__)
+    sys.exit(0)
 
 args = [a for a in sys.argv[1:] if not a.startswith('--')]
 show_all = '--all' in sys.argv
@@ -45,7 +68,7 @@ b2sext_sna_reg = numpy.ma.filled(f.variables['b2sext_sna_reg'][:], 0)
 # face is a guard cell), so fnareg > 0 on a boundary region means particles leaving the plasma.
 # The balance weight is therefore -1 on all boundary regions and 0 on internal ones (the
 # structured-grid +-1 x/y weights of particle_balance.py do not apply). The boundary regions
-# are read from b2fgmtry (argument, ./, baserun/ or ../baserun/); SN defaults otherwise.
+# are read from b2fgmtry (argument, ./, baserun/ or ../baserun/); SN defaults if none is found.
 SN_BOUNDARY = [1,4,7,8,9,11,12,13]
 SN_NAMES = {1:'W target', 2:'W div entrance', 3:'E div entrance', 4:'E target',
             5:'core cut', 6:'div cut', 7:'W PFR wall', 8:'core boundary',
@@ -82,7 +105,6 @@ def boundary_regions():
         print('Boundary regions from %s:' % fn, bnd)
         args.remove(fn) if fn in args else None
         return bnd
-    if vreg != 5: raise ValueError('b2fgmtry not found and no default boundary regions for vreg=%s' % vreg)
     print('b2fgmtry not found, using SN default boundary regions', SN_BOUNDARY)
     return SN_BOUNDARY
 

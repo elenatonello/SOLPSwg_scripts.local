@@ -134,7 +134,8 @@ def plot_quantity(ax, qty, run_dirs, labels, species_filter, location, log_overr
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare OMP profiles across SOLPS-ITER runs.",
+        description="Compare radial profiles at the OMP or a divertor target across SOLPS-ITER runs "
+                    "(from the 2d_profiles/*.last10 files).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("run_dirs", nargs="+", type=Path,

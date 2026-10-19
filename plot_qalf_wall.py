@@ -11,6 +11,15 @@ and classifies it with Qalfmin / Qalfmax (read from the file, or given on the co
     wrk >= Qalfmax        normal wall face
 Wall faces are drawn as thick coloured segments on top of the (light) cell outlines. With
 --compare the faces whose class differs between two Qalfmin values are circled.
+Qalfmin/Qalfmax are the scalars stored in the b2fgmtry (set by modify_b2fgmtry_prep.py or b2us_prep); a
+face is any face between an interior cell and a guard cell, and "interior"/"guard" in the listings are the
+1-based cell numbers of b2fgmtry. Default view prints the number of faces per class.
+
+With --ref (the ORIGINAL geometry, same grid) the classes come from the wrk of that file and each face is
+then checked in the -g file: grazing faces whose Pbs was reduced / NOT reduced, band faces whose Pbs/S was
+raised to Qalfmax / NOT raised. --show selects what is drawn (see --show below); --show bc is a separate
+4-panel figure of the boundary conditions that b2stbr_phys.F will impose (see bc_figure for the assumed
+BCCON/BCMOM/BCENE/BCENI/BCPOT settings, which are NOT read from the run).
 
 Run from a run directory. Geometry is taken from ./b2fgmtry, ./b2mn.exe.dir/b2fgmtry or
 ../baserun/b2fgmtry (or give -g). The figure is opened in a window (TkAgg, like the other scripts in
@@ -26,6 +35,7 @@ Usage:
                                                              # the prepared file was actually reduced / raised there
     plot_qalf_wall.py --list 30                    # print the 30 most grazing faces
     plot_qalf_wall.py --show pbs                   # colour every wall face by log10 of its stored |Pbs|/S
+    plot_qalf_wall.py -g b2fgmtry_x --show bc --list 20   # what the BCs of b2stbc_phys.F will do on each wall face
     plot_qalf_wall.py -g b2fgmtry_prep --ref b2fgmtry_orig --show dpbs   # colour by log10(Pbs_new/Pbs_old):
                                                    # blue = reduced, red = raised, grey = unchanged
 """
@@ -51,11 +61,120 @@ def find_geometry(here):
     sys.exit('b2fgmtry not found; give it with -g')
 
 
+def finish_figure(plt, fig, name, a, tmpdir):
+    """Save / show a figure with the same logic as the other modes."""
+    if a.save or tmpdir:
+        png = os.path.join(a.out if a.save else tmpdir, name)
+        fig.savefig(png, dpi=140)
+        print('\nwrote', png)
+        if tmpdir:
+            code = shutil.which('code')
+            if code:
+                subprocess.run([code, '-r', png], check=False)
+            print('No display available; figure written to', tmpdir)
+    else:
+        plt.show()
+
+
+def bc_figure(plt, LineCollection, PolyCollection, g, wall, inner, guard, vx, fcVx, w, pbs, lbl, qmin, qmax,
+              nCi, x, y, a):
+    """Four maps of what b2stbc_phys.F will impose on the wall faces of this b2fgmtry
+    (BCCON=14, BCMOM=13, BCENE=15 style 1, BCENI=15 style 0, BCPOT=11, as in the usual wall setup)."""
+    from matplotlib.colors import Normalize
+    wall_bc = lbl > 0                                  # vessel wall; the others are core-type boundaries
+    graz = wall_bc & (w < qmin)                        # the test used by every BC: |Qalf0 Bx/B| < Qalfmin
+    norm_ok = wall_bc & ~graz
+    incons = norm_ok & (np.abs(pbs - w) > 1e-6 * np.maximum(w, 1e-30))   # Pbs/S != |Qalf0 Bx/B| (clipped faces)
+    f_part = np.where(graz, qmax, w)                   # particles, ion energy, potential: sink fraction
+    f_ele = np.where(graz, qmax, pbs)                  # electron energy: s1/S
+    with np.errstate(divide='ignore', invalid='ignore'):
+        f_u = np.where(norm_ok, w / np.where(pbs > 0, pbs, np.nan), np.nan)   # |u_guard| / (m_par c_s)
+
+    print('\nBoundary conditions that b2stbc_phys.F will impose (stored scalars Qalfmin = %g, Qalfmax = %g):' % (qmin, qmax))
+    print('  wall faces (fcLbl > 0): %d   core-type boundary faces: %d' % (wall_bc.sum(), (~wall_bc).sum()))
+    print('  GRAZING  (w < Qalfmin)  : %4d faces -> particles: sink S*m_par*c_s*Qalfmax, u_guard = u_interior,' % graz.sum())
+    print('                                         electron E: s1 = S*Qalfmax, ion E: -1.5*S*Qalfmax*c_s*n_i, phi_guard = phi_interior')
+    print('  NORMAL   (w >= Qalfmin) : %4d faces -> particles: S*m_par*c_s*w, u_guard = +-m_par*c_s*S*w/|Pbs|,' % norm_ok.sum())
+    print('                                         electron E: s1 = |Pbs|, ion E ~ enipar1*sum(m_par n_s)*S*c_s*w, sheath current with S*w')
+    print('    of which Pbs/S != w (clipped/inconsistent): %d faces (electron sink uses Pbs, the others use w; u_guard < c_s)' % incons.sum())
+    if norm_ok.any():
+        print('  sink fraction (particles/ion E/potential): min %.2e  median %.2e  max %.2e' % (f_part[wall_bc].min(),
+              np.median(f_part[wall_bc]), f_part[wall_bc].max()))
+    if incons.any():
+        print('  guard velocity factor |u|/(m_par c_s) on the inconsistent faces: min %.2f  median %.2f' % (np.nanmin(f_u[incons]),
+              np.nanmedian(f_u[incons])))
+    if a.list:
+        idx = np.where(graz | incons)[0]
+        idx = idx[np.argsort(y[inner[idx]])]
+        print('\n%d faces that are grazing or inconsistent (sorted by Z):' % min(len(idx), a.list))
+        print('  interior guard    R      Z      w        Pbs/S    branch      part/ionE   electronE   |u|/(m c_s)')
+        for i in idx[:a.list]:
+            print('  %6d %6d  %.3f %+.3f  %.2e  %.2e  %-10s  %.2e    %.2e    %s' % (
+                inner[i] + 1, guard[i] + 1, x[inner[i]], y[inner[i]], w[i], pbs[i], 'GRAZING' if graz[i] else 'clipped',
+                f_part[i], f_ele[i], 'pinned' if graz[i] else '%.2f' % f_u[i]))
+
+    fig, axs = plt.subplots(1, 4, figsize=(19, 10.5), constrained_layout=True)
+    polys, ok = build_polygons(g)
+    sel = [i for i in np.flatnonzero(ok) if i < nCi]
+    seg_all = np.stack([vx[fcVx[0, wall]], vx[fcVx[1, wall]]], axis=1)
+
+    def base(ax, title):
+        ax.add_collection(PolyCollection([polys[i] for i in sel], facecolors='none', edgecolors='#dddddd', linewidths=0.2))
+        ax.set_aspect('equal')
+        ax.set_xlim(*(a.zoom[:2] if a.zoom else (vx[:, 0].min() - 0.01, vx[:, 0].max() + 0.01)))
+        ax.set_ylim(*(a.zoom[2:] if a.zoom else (vx[:, 1].min() - 0.01, vx[:, 1].max() + 0.01)))
+        ax.set_xlabel('R [m]')
+        ax.set_title(title, fontsize=9.5)
+        core = ~wall_bc
+        if core.any():
+            ax.add_collection(LineCollection(seg_all[core], colors='#bbbbbb', linewidths=1.2))
+
+    # panel 1: branch
+    ax = axs[0]
+    base(ax, 'branch taken (test $w=|Q_\\alpha^{(0)}B_x/B|<$ Qalfmin)')
+    for m, c, lab in ((norm_ok & ~incons, '#1f77b4', 'normal: sheath formulas with true w'),
+                      (incons, '#ff9f1c', 'normal but Pbs/S $\\neq w$ (clipped)'),
+                      (graz, '#d62728', 'grazing: floor Qalfmax, u and $\\phi$ pinned')):
+        if m.any():
+            ax.add_collection(LineCollection(seg_all[m], colors=c, linewidths=4.0 if c != '#1f77b4' else 1.8,
+                                             label=f'{lab}  [{int(m.sum())}]'))
+    ax.legend(loc='lower center', fontsize=7.5, framealpha=0.9)
+    ax.set_ylabel('Z [m]')
+
+    def cmap_panel(ax, title, val, mask, cmap, norm, label):
+        base(ax, title)
+        if (~mask & wall_bc).any():
+            ax.add_collection(LineCollection(seg_all[wall_bc & ~mask], colors='#8b6fbf', linewidths=3.0,
+                                             label=f'pinned / not applicable  [{int((wall_bc & ~mask).sum())}]'))
+            ax.legend(loc='lower center', fontsize=7.5, framealpha=0.9)
+        if mask.any():
+            lc = LineCollection(seg_all[mask], array=val[mask], cmap=cmap, norm=norm, linewidths=4.0)
+            ax.add_collection(lc)
+            fig.colorbar(lc, ax=ax, shrink=0.55, pad=0.02, label=label)
+
+    lg = lambda v: np.log10(np.where(v > 0, v, np.nan))
+    allm = wall_bc & np.isfinite(lg(f_part))
+    lo = np.nanmin(lg(np.concatenate([f_part[wall_bc], f_ele[wall_bc]])))
+    hi = np.nanmax(lg(np.concatenate([f_part[wall_bc], f_ele[wall_bc]])))
+    nrm = Normalize(lo, hi)
+    cmap_panel(axs[1], 'particles, ion energy, potential:\nsink fraction ($w$ or Qalfmax)', lg(f_part), allm, 'viridis', nrm,
+               'log10( sink fraction )')
+    cmap_panel(axs[2], 'electron energy:\ns$_1$/S ($|P_{bs}|/S$ or Qalfmax)', lg(f_ele), wall_bc & np.isfinite(lg(f_ele)),
+               'viridis', nrm, 'log10( s$_1$/S )')
+    cmap_panel(axs[3], 'momentum: guard velocity / ($m_{par}c_s$)\n= $S\\,w/|P_{bs}|$ (1 = Mach 1; grazing: $u=u_{int}$)', f_u,
+               norm_ok & np.isfinite(f_u), 'RdYlBu', Normalize(0.0, 1.2), '$|u_{guard}|/(m_{par}c_s)$')
+    fig.suptitle('Wall boundary conditions imposed by this b2fgmtry: stored Qalfmin = %g, Qalfmax = %g   '
+                 '(assumes BCCON=14, BCMOM=13, BCENE=15 style 1, BCENI=15 style 0, BCPOT=11)' % (qmin, qmax), fontsize=10.5)
+    name = 'qalf_wall_bc_qmin%g_qmax%g%s.png' % (qmin, qmax, '_zoom' if a.zoom else '')
+    return fig, name
+
+
 def main():
     here = os.getcwd()
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
-    ap.add_argument('-g', '--geometry', default=None)
+    ap.add_argument('-g', '--geometry', default=None,
+                    help='b2fgmtry to analyse (default: ./b2fgmtry, ./b2mn.exe.dir/b2fgmtry or ../baserun/b2fgmtry)')
     ap.add_argument('--qmin', type=float, default=None, help='Qalfmin (default: value in the file)')
     ap.add_argument('--qmax', type=float, default=None, help='Qalfmax (default: value in the file)')
     ap.add_argument('--compare', type=float, default=None, metavar='QMIN2',
@@ -64,13 +183,18 @@ def main():
                     help='unmodified geometry: classify the faces by their wrk in THIS file (where the grazing '
                          'and band faces were), and show for each whether the file given with -g was actually '
                          'reduced / raised there (Pbs/S)')
-    ap.add_argument('--show', choices=('class', 'pbs', 'dpbs'), default='class',
+    ap.add_argument('--show', choices=('class', 'pbs', 'dpbs', 'bc'), default='class',
                     help="'class' (default): faces coloured by grazing class; 'pbs': by log10 of the stored "
                          "|Pbs|/S of the -g file; 'dpbs': by log10(Pbs/S of -g file / Pbs/S of --ref file) "
-                         "(needs --ref)")
-    ap.add_argument('--zoom', nargs=4, type=float, metavar=('RMIN', 'RMAX', 'ZMIN', 'ZMAX'))
-    ap.add_argument('--list', type=int, default=0, metavar='N', help='print the N lowest non-zero wrk faces')
-    ap.add_argument('-o', '--out', default=os.path.join(here, 'qalf_wall'))
+                         "(needs --ref); 'bc': the boundary conditions the code will impose on every wall "
+                         "face for this file (branch, sink fractions, guard velocity)")
+    ap.add_argument('--zoom', nargs=4, type=float, metavar=('RMIN', 'RMAX', 'ZMIN', 'ZMAX'),
+                    help='plot window in m: R range then Z range (default: whole mesh)')
+    ap.add_argument('--list', type=int, default=0, metavar='N',
+                    help="print N faces: with --show class the N lowest non-zero wrk faces; with pbs / dpbs the N "
+                         "smallest Pbs/S / largest |change|; with bc the N grazing or inconsistent faces")
+    ap.add_argument('-o', '--out', default=os.path.join(here, 'qalf_wall'),
+                    help='output directory for --save (default: ./qalf_wall)')
     ap.add_argument('--save', action='store_true', help='write a PNG to --out instead of showing a window')
     a = ap.parse_args()
     if a.show == 'dpbs' and not a.ref:
@@ -78,7 +202,7 @@ def main():
 
     gm = a.geometry or find_geometry(here)
     g = read_cf(gm, {'cvX', 'cvY', 'vxX', 'vxY', 'cvVxP', 'cvVx', 'fcCv', 'fcVx', 'fcQalf', 'fcBb', 'fcS',
-                     'fcPbs', 'Qalfmin', 'Qalfmax', 'nCi,nCg,nCv,nFc,nVx,nFs,nFt'})
+                     'fcPbs', 'fcLbl', 'Qalfmin', 'Qalfmax', 'nCi,nCg,nCv,nFc,nVx,nFs,nFt'})
     hk = g['nCi,nCg,nCv,nFc,nVx,nFs,nFt']
     nCi, nFc = int(hk[0]), int(hk[3])
     qmin = a.qmin if a.qmin is not None else float(g['Qalfmin'][0]) if 'Qalfmin' in g else 1e-3
@@ -170,6 +294,12 @@ def main():
     tmpdir = None if a.save or interactive else tempfile.mkdtemp(prefix='qalf_wall_')
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection, PolyCollection
+
+    if a.show == 'bc':
+        fig, name = bc_figure(plt, LineCollection, PolyCollection, g, wall, inner, guard, vx, fcVx, w,
+                              np.abs(g['fcPbs'][wall] / g['fcS'][wall]), g['fcLbl'][wall], qmin, qmax, nCi, x, y, a)
+        finish_figure(plt, fig, name, a, tmpdir)
+        return
 
     polys, ok = build_polygons(g)
     sel = [i for i in np.flatnonzero(ok) if i < nCi]

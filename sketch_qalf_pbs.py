@@ -6,6 +6,8 @@ Poloidal-plane view of one wall face: the wall (hatched), the face normal n, the
 leave along B (red bracket). Top row: three kinds of faces before the prep. Bottom row: what the prep does.
 
 Usage:  sketch_qalf_pbs.py [out.png]       (default: qalf_sketch.png next to this script)
+Needs no input files: the numbers in the panels are illustrative examples, not read from a run.
+Background: qalf_pbs_notes.tex / .pdf in this directory.
 """
 import os
 import sys
@@ -66,6 +68,9 @@ def panel(ax, title, alpha_deg, opening, lines, sink=1.0, sink_label=None, tor=F
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ('-h', '--help'):
+        print(__doc__)
+        return
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                              'qalf_sketch.png')
     fig, axs = plt.subplots(2, 3, figsize=(13.5, 9.2), constrained_layout=True)

@@ -16,6 +16,11 @@ that step from modules/B2.5/src/modules/b2us_prep.F (Qalf_mod_style = 0) to Pyth
 
 Not ported (yet): b2us_prep_mod_hc, b2us_prep_set_beta_0, b2us_prep_Qalf_mod_style = 1.
 
+Qalfmin and Qalfmax are GLOBAL at run time: besides the faces modified here, the stored values change the
+boundary conditions of every wall face (grazing test w < Qalfmin, floor sink Qalfmax). The summary therefore
+lists the UNMODIFIED wall faces whose boundary-condition sink changes anyway (e.g. when --zbox/--box restrict
+the faces that are modified, or with --scalars-only).
+
 The script never changes the input file unless --inplace is given (then the original is kept once as
 <file>.orig and every run starts from that copy, so the step is never applied twice). Unmodified
 arrays are written back byte for byte; a round-trip self-test runs first.
@@ -24,6 +29,10 @@ Usage (from the baserun directory):
     modify_b2fgmtry_prep.py b2fgmtry --qmin 2e-3 --qmax 4e-3 --pbs-reduce 1e-6 -o b2fgmtry_prep
     modify_b2fgmtry_prep.py b2fgmtry --qmin 2e-3 --qmax 4e-3 --pbs-reduce 1e-6 --inplace
     modify_b2fgmtry_prep.py b2fgmtry --dry-run ...        # only print what would change
+    modify_b2fgmtry_prep.py b2fgmtry_orig --qmin 1e-3 --qmax 8e-3 --pbs-reduce 1e-6 --zbox -0.3 0.3 -o b2fgmtry_mid
+                                                          # modify only wall faces with |Z| < 0.3 (face midpoint)
+    modify_b2fgmtry_prep.py b2fgmtry --qmin 2e-3 --qmax 4e-3 --box 0.6 0.7 -0.5 -0.2 -o b2fgmtry_box
+                                                          # same with an R and Z range (--box and --zbox may be repeated)
     modify_b2fgmtry_prep.py b2fgmtry_b2ag --qmin 1e-3 --qmax 8e-3 --scalars-only -o b2fgmtry_scalars   # edit only the two scalars
     modify_b2fgmtry_prep.py b2fgmtry --angles prep ...    # also overwrite Qbet/Qgam of all wall faces
                                                           # (what prep_geometry does; default is --angles keep)
@@ -124,6 +133,11 @@ def main():
     ap.add_argument('--scalars-only', action='store_true',
                     help='only store Qalfmin/Qalfmax in the file; leave Pbs and all angles untouched '
                          '(the file then plots exactly like the input with --qmin/--qmax)')
+    ap.add_argument('--zbox', nargs=2, type=float, action='append', metavar=('ZMIN', 'ZMAX'),
+                    help='modify only wall faces whose midpoint has ZMIN <= Z <= ZMAX; all other faces keep their '
+                         'original Pbs and angles (may be repeated; union with --box)')
+    ap.add_argument('--box', nargs=4, type=float, action='append', metavar=('RMIN', 'RMAX', 'ZMIN', 'ZMAX'),
+                    help='like --zbox with an R range as well (may be repeated)')
     ap.add_argument('-o', '--output', default=None, help='output file (default <input>_prep)')
     ap.add_argument('--inplace', action='store_true', help='overwrite the input (original kept as .orig)')
     ap.add_argument('--dry-run', action='store_true', help='print the summary, write nothing')
@@ -153,6 +167,7 @@ def main():
     hdr = G.get('nCi,nCg,nCv,nFc,nVx,nFs,nFt')
     nCi, nCg, nCv, nFc = (int(hdr[k]) for k in (0, 1, 2, 3))
     cvFcP = G.get('cvFcP').reshape(2, -1)
+    fcCvA = G.get('fcCv').reshape(2, nFc) - 1
     cvFc = G.get('cvFc')
     fcLbl = G.get('fcLbl')
     S = G.get('fcS')
@@ -178,14 +193,28 @@ def main():
     band = wall & (wrk < a.qmax)
     graz = ~wall
 
+    # ---- region selection (faces outside every box keep their original Pbs and angles)
+    fcVx = G.get('fcVx').reshape(2, nFc) - 1
+    vxX, vxY = G.get('vxX'), G.get('vxY')
+    midR = 0.5 * (vxX[fcVx[0, gf]] + vxX[fcVx[1, gf]])
+    midZ = 0.5 * (vxY[fcVx[0, gf]] + vxY[fcVx[1, gf]])
+    boxes = [tuple(b) for b in (a.box or [])] + [(-np.inf, np.inf, z0, z1) for z0, z1 in (a.zbox or [])]
+    if boxes:
+        inbox = np.zeros(len(gf), bool)
+        for r0, r1, z0, z1 in boxes:
+            inbox |= (midR >= r0) & (midR <= r1) & (midZ >= z0) & (midZ <= z1)
+    else:
+        inbox = np.ones(len(gf), bool)
+    wall_m, band_m, graz_m = wall & inbox, band & inbox, graz & inbox
+
     # wall faces below Qalfmax: contact area raised to Qalfmax*S
-    f = gf[band]
+    f = gf[band_m]
     Pbs[f] = a.qmax * S[f] * sign1(Pbs0[f])
     Qa[0, f] = np.clip(Pbs[f] / S[f] * Bb[3, f] / Bb[0, f], -1.0, 1.0)
     Qa[1, f] = np.where(Qa0[1, f] < 0, -1.0, 1.0) * np.sqrt(1.0 - Qa[0, f] ** 2)
     if a.angles == 'prep':
         # wall faces: angles as in prep_geometry (beta = 0, gamma = alpha)
-        f, b = gf[wall], bz[wall]
+        f, b = gf[wall_m], bz[wall_m]
         neg = Qa[0, f] < 0
         Qb[0, f] = np.where(neg, -1.0, 1.0) * b
         Qg[0, f] = np.where(neg, -Qa[0, f], Qa[0, f])
@@ -194,11 +223,11 @@ def main():
     else:
         # keep the stored connector angle (Qgam); only restore Qbet = f(Qalf, Qgam) where Qalf changed.
         # (this relation holds to 1e-14 for all boundary faces of the unmodified file)
-        f, b = gf[band], bz[band]
+        f, b = gf[band_m], bz[band_m]
         Qb[0, f] = (Qg0[0, f] * Qa[0, f] + Qg0[1, f] * Qa[1, f] * b) * b
         Qb[1, f] = Qg0[1, f] * Qa[0, f] - Qg0[0, f] * Qa[1, f] * b
     # grazing faces: reduced contact area, angles recomputed from it
-    f, b = gf[graz], bz[graz]
+    f, b = gf[graz_m], bz[graz_m]
     Pbs[f] = a.pbs_reduce * Pbs0[f]
     Qa[0, f] = np.clip(Pbs[f] / S[f] * Bb[3, f] / Bb[0, f], -1.0, 1.0)
     Qa[1, f] = np.where(Qa0[1, f] < 0, -1.0, 1.0) * np.sqrt(1.0 - Qa[0, f] ** 2)
@@ -211,12 +240,30 @@ def main():
     print(f'guard faces with fcLbl > 0: {len(gf)}')
     print(f'  wall faces (wrk >= Qalfmin):          {int(wall.sum()):4d}   of which raised to Qalfmax*S: {int(band.sum())}')
     print(f'  grazing faces (wrk < Qalfmin):        {int(graz.sum()):4d}   (of which wrk == 0: {int((wrk[graz] == 0).sum())})')
+    if boxes:
+        print(f'  region selection: {int(inbox.sum())} of {len(gf)} wall faces inside the box(es); modified: '
+              f'{int((band_m | graz_m).sum())} (raised {int(band_m.sum())}, reduced {int(graz_m.sum())})')
+    # The stored scalars Qalfmin/Qalfmax are GLOBAL at run time: they also change the boundary conditions of
+    # faces whose geometry is left untouched. Fraction used by the BC sinks: Qalfmax if w < Qalfmin else w.
+    mod_set = np.zeros(len(gf), bool) if a.scalars_only else (band_m | graz_m)
+    frac_before = np.where(wrk < old_qmin, old_qmax, wrk)
+    frac_after = np.where(wrk < a.qmin, a.qmax, wrk)
+    side = (~mod_set) & (wrk > 0) & (np.abs(frac_after / frac_before - 1.0) > 1e-9)
+    if side.any():
+        print(f'\n  NOTE: {int(side.sum())} UNMODIFIED wall faces still get a different boundary-condition sink because '
+              f'Qalfmin/Qalfmax are global:')
+        print('    interior cell   R      Z       w0       sink fraction  before -> after   (x)')
+        inner = np.where(fcCvA[0, gf] < nCi, fcCvA[0, gf], fcCvA[1, gf])
+        for i in np.argsort(midZ):
+            if side[i]:
+                print(f'    {inner[i] + 1:8d}   {midR[i]:.3f} {midZ[i]:+.3f}  {wrk[i]:.2e}   {frac_before[i]:.2e} -> {frac_after[i]:.2e}   '
+                      f'x{frac_after[i] / frac_before[i]:.2f}')
     for name, new, old in (('fcPbs', Pbs, Pbs0), ('fcQalf(0)', Qa[0], Qa0[0]), ('fcQalf(1)', Qa[1], Qa0[1]),
                            ('fcQbet(0)', Qb[0], Qb0[0]), ('fcQbet(1)', Qb[1], Qb0[1]),
                            ('fcQgam(0)', Qg[0], Qg0[0]), ('fcQgam(1)', Qg[1], Qg0[1])):
         d = np.abs(new - old)
         print(f'  {name:<10s}: {int((d > 1e-14).sum()):5d} faces change, max |change| {d.max():.3g}')
-    print('  grazing faces that are not core-type (wrk > 0): R, Z not available here; use plot_qalf_wall.py')
+    print('  to map and list these faces use: plot_qalf_wall.py -g <file> [--ref <original>] --list N')
     # checks that prep_geometry asserts
     ok = (Qg[1].min() > -1.0 and Qg[1].max() < 1.0 and Qg[0].min() > 0.0 and Qg[0].max() <= 1.0)
     print(f'  prep_geometry range check on fcQgam: {"OK" if ok else "WOULD FAIL (min Qgam0 %.3g)" % Qg[0].min()}')

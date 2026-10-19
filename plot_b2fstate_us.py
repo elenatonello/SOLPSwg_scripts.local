@@ -7,8 +7,15 @@ Usage example:
 Features:
 - reads geometry with `B2StateIO.read_b2fgmtry_us`
 - reads unstructured state via `B2StateIO.parse_b2fstate_template`
-- plots a scatter colored by the chosen field
-- optional Delaunay triangulation (requires SciPy) to use `tripcolor`
+- plots a scatter colored by the chosen field (marker size --size)
+- optional Delaunay triangulation (requires SciPy) to use `tripcolor`; falls back to the scatter plot if
+  SciPy is missing. The Delaunay mesh is built from the cell centres only, so it covers their whole convex
+  hull, including regions that are not part of the mesh: treat it as a quick look.
+- plotting is done by the small `Plotter` class of plotter.py
+
+--field is any array of the file with nCv values (ne, te, ti, po, ...) or a multiple of nCv (na, ua: then
+--slice selects the species index, 0-based; an index out of range silently falls back to 0). Values are in
+the raw file units: te, ti are in J (not eV) and na, ne in m^-3. Without --save the plot is shown in a window.
 """
 from __future__ import annotations
 import argparse
@@ -34,11 +41,11 @@ def extract_block(blocks, key: str):
 
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('--gmtry-us', required=True)
-    p.add_argument('--state-us', required=True)
-    p.add_argument('--field', default='ne', help='field to plot (ne, na, te, ti, po, ua)')
-    p.add_argument('--slice', type=int, default=0, help='for multi-z fields select slice index (na, ua)')
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--gmtry-us', required=True, help='unstructured b2fgmtry (cell centres cvX, cvY)')
+    p.add_argument('--state-us', required=True, help='unstructured b2fstate (or b2fstati) to plot from')
+    p.add_argument('--field', default='ne', help='field to plot (ne, na, te, ti, po, ua; any array of size nCv or k*nCv)')
+    p.add_argument('--slice', type=int, default=0, help='species index (0-based) for species-resolved fields (na, ua)')
     p.add_argument('--tri', action='store_true', help='use Delaunay triangulation for tripcolor (requires scipy)')
     p.add_argument('--cmap', default='viridis')
     p.add_argument('--size', type=int, default=12, help='marker size for scatter')

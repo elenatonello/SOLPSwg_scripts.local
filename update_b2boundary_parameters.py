@@ -9,24 +9,29 @@ value's own field width/padding is preserved, and only fields whose
 value actually changes are re-rendered (widening only if the new value
 no longer fits the original slot).
 
-All edits below target column 1 of each array, which is the CORE
-boundary segment (bcstart(1) = -21 in the reference file), except the
-bccon(0,1) edit which targets specific columns within that row. Columns
-are counted 0-based, i.e. "the 2nd value" = index 1.
+Edits 1-4 change the FIRST value (column 1, 1-based) of the array, which is
+the CORE boundary segment (bcstart(1) = -21 in the reference file). Edit 6
+(bccon(0,1)) instead changes two specific entries of its row, given as 0-based
+indices (index 1 = the 2nd value). Both conventions are used below; they are
+stated explicitly in each item.
 
-Edits applied (values as found in
-runs/TCV/TCV62807/SILO/noDRIFTS_330008/b2.boundary.parameters):
+Edits applied (the original values are those found in
+path/to/your/run/dir/b2.boundary.parameters BEFORE
+this script was run on it; that file has since been edited and no longer shows them):
 
-  1. enepar(1,1): column 1 (core), currently 1.000E+06 -> --SHEE value
+  1. enepar(1,1): first value (core), originally 1.000E+06 -> --SHEE value
      (left untouched if --SHEE is not given).
-  2. enipar(1,1): column 1 (core), currently 1.000E+06 -> --SHII value
+  2. enipar(1,1): first value (core), originally 1.000E+06 -> --SHII value
      (left untouched if --SHII is not given).
-  3. bcene: column 1 (core), currently 8 -> 16.
-  4. bceni: column 1 (core), currently 8 -> 27.
-  5. conpar(0,1,1): ALL columns -> 0 (currently 0,3.0E+19,0,0,0,0,0,0,0).
-  6. bccon(0,1): column index 1 (0-based; "species 1", i.e. the 2nd
-     species, currently 1) -> 27, AND the last column (currently 8)
+  3. bcene: first value (core), originally 8 -> 16.
+  4. bceni: first value (core), originally 8 -> 27.
+  5. conpar(0,1,1): ALL values -> 0 (originally 0,3.0E+19,0,0,0,0,0,0,0).
+  6. bccon(0,1): index 1 (0-based; "species 1", i.e. the 2nd
+     species, originally 1) -> 27, AND the last entry (originally 8)
      -> 27. Row becomes 5,27,8,8,8,8,8,8,27.
+
+The file is edited in place and NO backup is kept: keep a copy (or use git) if you may want the
+original back. The script stops with an error if one of the arrays above is not found.
 
 This mapping (row bccon(0,1)/conpar(0,1,1) = the core segment; column
 index = 0-based species order D0,D+1,C0,C+1..C+6 as listed in

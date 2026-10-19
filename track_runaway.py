@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """Track the onset and spread of a Te/Ti/po runaway through the plasmastate.XXXX snapshots of a run.
 
-Per snapshot it prints the extrema of Te, Ti, po, |po|/Te and the parallel current fch_p, the number of
-cells beyond the thresholds, and where the worst cell is. Then it follows the cells that go bad first
-(po, Te, Ti, ne) through all snapshots, and ranks the quantities by which crossed its threshold first.
+Per snapshot (one table row) it prints the time, the maxima of Te and Ti [eV], the minimum and maximum of
+po [V], the maximum of |po|/Te, the maximum of |fch_p| (the first nFc values of the plasmastate field fch_p,
+in file units), the number of cells beyond each threshold (columns n(Te>), n(Ti>), n(|po|>), n(r>) with
+r = |po|/Te) and the worst cell. The worst cell is the one with the largest of Te/Te_thr, Ti/Ti_thr,
+|po|/po_thr among the cells beyond a Te, Ti or |po| threshold ("-" if none); the |po|/Te ratio only
+enters the counts and the first-crossing list, not the worst-cell choice.
+Then it lists, for each of Te, Ti, |po|, |po|/Te, the first snapshot in which it crosses its threshold,
+and follows the --follow cells that are worst in the first snapshot with any Te/Ti/|po| violation
+(Te, Ti, po and ne of each, in every snapshot). All cells are searched, guard cells included
+(a cell is labelled "guard" in the follow-up when its index is >= nCi).
 
-Run from the run directory (geometry from b2mn.exe.dir/b2fgmtry, ./b2fgmtry or ../baserun/b2fgmtry).
+Run from the run directory (geometry from DIR/b2fgmtry, ./b2fgmtry or ../baserun/b2fgmtry, with DIR = -d).
+Thresholds: --te, --ti in eV, --po in V, --rpo dimensionless (|po|/Te with Te in eV). Te, Ti are converted from J to eV.
 
 Usage:
     track_runaway.py                    # all snapshots, default thresholds
@@ -24,8 +32,10 @@ from plot_plasmastate import EV, read_cf, read_plasmastate  # noqa: E402
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('-d', '--dir', default='b2mn.exe.dir')
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('-d', '--dir', default='b2mn.exe.dir',
+                    help='directory with the plasmastate.XXXX files (default: b2mn.exe.dir)')
     ap.add_argument('--te', type=float, default=1000.0, help='Te threshold [eV]')
     ap.add_argument('--ti', type=float, default=1000.0, help='Ti threshold [eV]')
     ap.add_argument('--po', type=float, default=100.0, help='|po| threshold [V]')

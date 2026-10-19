@@ -3,17 +3,28 @@
 Convert a translator `.dgo` file (sections `p1`, `p2`, `fclbl`) into a Carre `structure.dat` file.
 
 Usage:
-  python scripts/dgo_to_structure.py --in dg.dgo --out structure.dat
+  dgo_to_structure.py [--in dg.dgo] [--out structure.dat] [--tol 1e-6]
+     --in/-i   input .dgo file (default dg.dgo)
+     --out/-o  output file (default structure.dat)
+     --tol     tolerance in metres for deciding that two segment end points coincide (default 1e-6)
 
 Behavior:
- - Parses `p1` and `p2` sections as segment endpoints (X Y [Z]) and `fclbl` as integer labels.
+ - Parses `p1` and `p2` sections as segment endpoints (X Y [Z]) and `fclbl` as integer labels (one per segment).
+   Z is read but dropped: X and Y are written as the (R, Z) coordinates of the structure.
  - Coordinates in the `.dgo` are expected to be in millimetres (mm) and will be converted to metres (m) in the output `structure.dat`.
- - Groups segments by positive `fclbl` (if `fclbl` missing, all segments get label 1).
- - Assembles connected segments into chains/loops using exact or near-equality (tolerance).
+ - Groups segments by positive `fclbl` (if `fclbl` missing, all segments get label 1; segments with fclbl <= 0 are ignored).
+ - Assembles the segments of each label into chains/loops by following the segment orientation (p1 -> p2): a
+   segment is appended to a chain when its p1 coincides with the chain end (within tolerance). A segment written
+   in the opposite direction is NOT flipped, so it starts a separate chain.
  - Emits `structure.dat` compatible with Carre's `fcrstro` expectations:
      First line: number of structures
-     Then `$structures`, then `Structure <n>` blocks, each with a signed count
- - Closed loops are written with positive count and first point repeated at end; open chains use negative count.
+     Then `$structures`, then one `Structure<label>` block per assembled chain (the number is the fclbl
+     label, not a running index), each with a signed count, then the points (X Y, in m), then `$end`
+ - Closed loops are written with positive count (number of distinct points + 1) and the first point repeated at
+   the end; open chains use negative count (minus the number of points).
+ - Prints "Global contour closed: True/False": whether the structures can be chained end-to-start into one closed
+   contour (and then in which order of labels). This is a depth-first search and may be slow for very many
+   structures; it only reports, the file is written in either case.
 
 This is a best-effort converter; complex topologies might need manual inspection.
 """
@@ -85,6 +96,7 @@ def parse_dgo(path: str):
     return p1,p2,fclbl
 
 def key_pt(pt: Tuple[float,float,float], tol=1e-6):
+    # (unused helper; assemble_loops builds the same key inline)
     # discard Z for Carre structures (R,Z -> we take X as R, Y as Z)
     x,y,_ = pt
     # quantize using tolerance
@@ -278,10 +290,11 @@ def convert(infile: str, outfile: str, tol: float=1e-6):
     write_structure(outfile, all_structures)
 
 def main():
-    ap = argparse.ArgumentParser(description='Convert dgo -> structure.dat')
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--in','-i', dest='infile', default='dg.dgo', help='input dgo file')
     ap.add_argument('--out','-o', dest='outfile', default='structure.dat', help='output structure.dat')
-    ap.add_argument('--tol', type=float, default=1e-6, help='point matching tolerance')
+    ap.add_argument('--tol', type=float, default=1e-6, help='point matching tolerance [m] (default 1e-6)')
     args = ap.parse_args()
     convert(args.infile, args.outfile, tol=args.tol)
 

@@ -4,8 +4,12 @@ write_b2numerics_parameters.py — write both b2.numerics.parameters_F and
 b2.numerics.parameters_T, generalized over the number of poloidal
 regions.
 
-Reproduces exactly the reference files found in
-runs/TCV/TCV62807/SILO/noDRIFTS_330008/:
+Based on the reference files of a TCV run (path/to/your/run/dir/). The two
+files differ in which equations are solved: in _F the continuity, potential and
+electron/ion energy solves are all off (solveco, solvepo, solveee, solveei = f;
+only the solvemo momentum pattern is on); in _T potential and electron/ion
+energy are on and the continuity pattern is the same as for momentum. solvekt
+and solvezt are off in both. What is written is exactly:
 
   b2.numerics.parameters_F:
     &numerics
@@ -33,15 +37,25 @@ runs/TCV/TCV62807/SILO/noDRIFTS_330008/:
     solveei(1)=t,
     solvekt(1)=f,
     solvezt(1)=f,
-    sna_corr = 2*50,
+    dtco(0,1)=9*100.0,
+    dtee(1)=50.0,
+    dtei(1)=50.0,
+    corr_core_dn(0) = 9*0.0075,
+    corr_core_dt  = 0.0075,
     /
 
-The per-species true/false patterns for solveco/solvemo (9 entries,
-matching D0,D+1,C0,C+1..C+6) and the trailing "sna_corr = 2*50," line in
-the _T file are copied verbatim from the reference files and are NOT
-re-derived from the species list — only the number of REGIONS (how many
-solveco/solvemo/solvepo/... lines are written) is made configurable,
-since that is what varies between grid topologies.
+where 9 in dtco is the number of species (NSPECIES, see below). The per-species true/false patterns for solveco/solvemo (9 entries,
+matching D0,D+1,C0,C+1..C+6) and the two trailing "corr_core_dn/dt" lines in
+the _T file are fixed text and are NOT re-derived from the species list —
+only the number of REGIONS (how many solveco/solvemo/solvepo/... lines are
+written) is made configurable, since that is what varies between grid
+topologies. Edit the *_PATTERN constants (and build_numerics_t) for another
+species set. sna_corr is deliberately NOT written (it does not work on the wide grid).
+dtco/dtee/dtei are written once (region 1 only) and only in the _T file.
+
+Number of species (for dtco): explicit --nspecies N, otherwise the same detection as
+write_b2transport_parameters.py (DIR/../SOLPS_FLUIDS, then DIR/../baserun/b2ai.dat); an error
+if neither is available.
 
 Number of regions:
     - explicit  --nregions N
@@ -53,11 +67,13 @@ Number of regions:
       warning if you did not pass --nregions or provide a NREG file.
 
 Usage:
-    write_b2numerics_parameters.py DIR [--nregions N]
+    write_b2numerics_parameters.py DIR [--nregions N] [--nspecies N]
         # writes DIR/b2.numerics.parameters_F and DIR/b2.numerics.parameters_T
 """
 import argparse
 from pathlib import Path
+
+from write_b2transport_parameters import detect_nspecies
 
 F_SOLVECO_PATTERN = "f,f,f,f,f,f,f,f,f,"
 F_SOLVEMO_PATTERN = "f,t,f,t,t,t,t,t,t,"
@@ -100,7 +116,7 @@ def build_numerics_f(nregions):
     return "\n".join(lines) + "\n"
 
 
-def build_numerics_t(nregions):
+def build_numerics_t(nregions, nspecies):
     lines = ["&numerics"]
     lines += [f"solveco(0,{i})={T_SOLVECO_PATTERN}" for i in range(1, nregions + 1)]
     lines += [f"solvemo(0,{i})={T_SOLVEMO_PATTERN}" for i in range(1, nregions + 1)]
@@ -109,8 +125,11 @@ def build_numerics_t(nregions):
     lines += [f"solveei({i})=t," for i in range(1, nregions + 1)]
     lines += [f"solvekt({i})=f," for i in range(1, nregions + 1)]
     lines += [f"solvezt({i})=f," for i in range(1, nregions + 1)]
-    lines.append("corr_core_dn(0) = 9*0.0075,")
-    lines.append("corr_core_dt  = 0.0075,")
+    lines.append(f"dtco(0,1)={nspecies}*100.0,")
+    lines.append(f"dtee(1)=50.0,")
+    lines.append(f"dtei(1)=50.0,")
+    lines.append(f"corr_core_dn(0) = 9*0.0075,")
+    lines.append(f"corr_core_dt  = 0.0075,")
     lines.append("/")
     return "\n".join(lines) + "\n"
 
@@ -119,10 +138,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("dir", type=Path, help="run directory to write b2.numerics.parameters_F/_T into")
     parser.add_argument("--nregions", type=int, default=None, help="number of regions (overrides NREG auto-detection)")
+    parser.add_argument("--nspecies", type=int, default=None,
+                        help="number of species for dtco (overrides SOLPS_FLUIDS/b2ai.dat auto-detection)")
     args = parser.parse_args()
 
     dir_path = args.dir
     nregions, note = detect_nregions(dir_path, args.nregions)
+    print(note)
+
+    nspecies, note = detect_nspecies(dir_path, args.nspecies)
     print(note)
 
     f_path = dir_path / "b2.numerics.parameters_F"
@@ -130,7 +154,7 @@ def main():
     print(f"Wrote: {f_path}")
 
     t_path = dir_path / "b2.numerics.parameters_T"
-    t_path.write_text(build_numerics_t(nregions))
+    t_path.write_text(build_numerics_t(nregions, nspecies))
     print(f"Wrote: {t_path}")
 
 
