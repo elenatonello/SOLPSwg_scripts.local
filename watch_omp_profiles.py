@@ -30,6 +30,7 @@ Examples:
     python watch_omp_profiles.py runs/A runs/B --labels "case A" "case B"
     python watch_omp_profiles.py runs/A -q ne te ti na --species 0 1 --interval 5
     python watch_omp_profiles.py runs/A --location od -q ne te ti
+    python watch_omp_profiles.py runs/A --steps 100 500 -1    # specific time indices
 """
 
 import argparse
@@ -141,14 +142,31 @@ def window_mean(values, window):
     return values[n - k:, ...].mean(axis=0)
 
 
-def last_and_prev_avg(values, window):
-    """Split a time-history array into its last step and the mean of the
-    `window` steps immediately before it (excludes the last step itself)."""
+def pick_time(values, window, step):
+    """Time reduction for one profile: the mean of the last `window` steps, or
+    the single step `step` (Python indexing, negative counts from the end)."""
+    if step is None:
+        return window_mean(values, window)
     n = values.shape[0]
-    if n < 2:
-        return values[-1, ...], values[-1, ...]
-    k = min(window, n - 1)
-    return values[-1, ...], values[n - 1 - k:n - 1, ...].mean(axis=0)
+    if not -n <= step < n:
+        raise IndexError(f"step {step} out of range for {n} time steps")
+    return values[step, ...]
+
+
+def last_and_prev_avg(values, window, step=None):
+    """Split a time-history array into one step (default: the last) and the mean
+    of the `window` steps immediately before it (excludes that step itself)."""
+    n = values.shape[0]
+    if step is None:
+        step = n - 1
+    elif not -n <= step < n:
+        raise IndexError(f"step {step} out of range for {n} time steps")
+    else:
+        step %= n
+    if step < 1:
+        return values[step, ...], values[step, ...]
+    k = min(window, step)
+    return values[step, ...], values[step - k:step, ...].mean(axis=0)
 
 
 def relative_delta_pct(last, prev_avg):
@@ -156,17 +174,17 @@ def relative_delta_pct(last, prev_avg):
         return np.where(prev_avg != 0, (last - prev_avg) / prev_avg * 100.0, np.nan)
 
 
-def read_quantity(ds_nc, base, suffix, window, convert_ev):
+def read_quantity(ds_nc, base, suffix, window, convert_ev, step=None):
     var = f"{base}{suffix}"
     if var not in ds_nc.variables:
         return None
-    val = window_mean(np.asarray(ds_nc.variables[var][:]), window)
+    val = pick_time(np.asarray(ds_nc.variables[var][:]), window, step)
     if convert_ev:
         val = val / EV
     return val
 
 
-def read_species_quantity(ds_nc, base, suffix, window, species_filter, n_spatial):
+def read_species_quantity(ds_nc, base, suffix, window, species_filter, n_spatial, step=None):
     prefix = f"{base}{suffix}"
 
     # Convention A: one variable per species, e.g. na3da0, na3da1, ...
@@ -180,7 +198,7 @@ def read_species_quantity(ds_nc, base, suffix, window, species_filter, n_spatial
     if found:
         if species_filter is not None:
             found = [(i, name) for i, name in found if i in species_filter]
-        return [(i, window_mean(np.asarray(ds_nc.variables[name][:]), window)) for i, name in found]
+        return [(i, pick_time(np.asarray(ds_nc.variables[name][:]), window, step)) for i, name in found]
 
     # Convention B: one variable with an extra species axis, e.g. na3da(time, ns, nya)
     # (axis order not assumed -- matched by size against the spatial (dsa) dimension).
@@ -190,10 +208,10 @@ def read_species_quantity(ds_nc, base, suffix, window, species_filter, n_spatial
 
     # Convention C: no species axis at all, e.g. 3.0.9 dn3da(time, nya)
     if raw.ndim == 2:
-        return [(None, window_mean(raw, window))] if raw.shape[1] == n_spatial else []
+        return [(None, pick_time(raw, window, step))] if raw.shape[1] == n_spatial else []
     if raw.ndim != 3:
         return []
-    avg = window_mean(raw, window)
+    avg = pick_time(raw, window, step)
     if avg.shape[0] == n_spatial:
         spatial_axis = 0
     elif avg.shape[1] == n_spatial:
@@ -210,17 +228,17 @@ def read_species_quantity(ds_nc, base, suffix, window, species_filter, n_spatial
     return result
 
 
-def read_quantity_delta(ds_nc, base, suffix, window, convert_ev):
+def read_quantity_delta(ds_nc, base, suffix, window, convert_ev, step=None):
     var = f"{base}{suffix}"
     if var not in ds_nc.variables:
         return None
-    last, prev_avg = last_and_prev_avg(np.asarray(ds_nc.variables[var][:]), window)
+    last, prev_avg = last_and_prev_avg(np.asarray(ds_nc.variables[var][:]), window, step)
     if convert_ev:
         last, prev_avg = last / EV, prev_avg / EV
     return relative_delta_pct(last, prev_avg)
 
 
-def read_species_quantity_delta(ds_nc, base, suffix, window, species_filter, n_spatial):
+def read_species_quantity_delta(ds_nc, base, suffix, window, species_filter, n_spatial, step=None):
     prefix = f"{base}{suffix}"
 
     found = []
@@ -235,7 +253,7 @@ def read_species_quantity_delta(ds_nc, base, suffix, window, species_filter, n_s
             found = [(i, name) for i, name in found if i in species_filter]
         result = []
         for i, name in found:
-            last, prev_avg = last_and_prev_avg(np.asarray(ds_nc.variables[name][:]), window)
+            last, prev_avg = last_and_prev_avg(np.asarray(ds_nc.variables[name][:]), window, step)
             result.append((i, relative_delta_pct(last, prev_avg)))
         return result
 
@@ -245,11 +263,11 @@ def read_species_quantity_delta(ds_nc, base, suffix, window, species_filter, n_s
     if raw.ndim == 2:
         if raw.shape[1] != n_spatial:
             return []
-        last, prev_avg = last_and_prev_avg(raw, window)
+        last, prev_avg = last_and_prev_avg(raw, window, step)
         return [(None, relative_delta_pct(last, prev_avg))]
     if raw.ndim != 3:
         return []
-    last, prev_avg = last_and_prev_avg(raw, window)
+    last, prev_avg = last_and_prev_avg(raw, window, step)
     if last.shape[0] == n_spatial:
         spatial_axis = 0
     elif last.shape[1] == n_spatial:
@@ -269,7 +287,8 @@ def read_species_quantity_delta(ds_nc, base, suffix, window, species_filter, n_s
     return result
 
 
-def draw(fig, axes, quantities, run_dirs, labels, species_filter, window, location, delta_axes=None):
+def draw(fig, axes, quantities, run_dirs, labels, species_filter, window, location, delta_axes=None,
+         steps=None):
     any_ok = False
     status_bits = []
     suffix, location_label = LOCATIONS[location]
@@ -285,8 +304,9 @@ def draw(fig, axes, quantities, run_dirs, labels, species_filter, window, locati
         plotted = False
         delta_plotted = False
 
+        selections = list(steps) if steps else [None]
+
         for run_idx, (run_dir, label) in enumerate(zip(run_dirs, labels)):
-            color = PALETTE[run_idx % len(PALETTE)]
             b2time_path = find_b2time(run_dir)
             if b2time_path is None:
                 if ax is axes[0]:
@@ -306,37 +326,47 @@ def draw(fig, axes, quantities, run_dirs, labels, species_filter, window, locati
                     if ax is axes[0]:
                         status_bits.append(f"{label}: {nt if nt is not None else '?'} steps")
 
-                    if species_resolved:
-                        series = read_species_quantity(
-                            ds_nc, base, suffix, window, species_filter, len(dsa))
-                        if not series and not any(n.startswith(f"{base}{suffix}")
-                                                  for n in ds_nc.variables):
-                            warn_once(f"{base}{suffix} not in {b2time_path}; skipping '{qty}' for {label}")
-                        for sp_idx, val in series:
-                            ls, lab = series_style(sp_idx, label)
-                            ax.plot(dsa[order], val[order], color=color, linestyle=ls,
-                                    linewidth=2, label=lab)
-                            plotted = True
-                        if delta_ax is not None:
-                            for sp_idx, dval in read_species_quantity_delta(
-                                    ds_nc, base, suffix, window, species_filter, len(dsa)):
-                                ls, lab = series_style(sp_idx, label)
-                                delta_ax.plot(dsa[order], dval[order], color=color, linestyle=ls,
-                                              linewidth=2, label=lab)
-                                delta_plotted = True
-                    else:
-                        val = read_quantity(ds_nc, base, suffix, window, convert_ev)
-                        if val is None:
-                            warn_once(f"{base}{suffix} not in {b2time_path}; skipping '{qty}' for {label}")
+                    for sel_idx, step in enumerate(selections):
+                        color = PALETTE[(run_idx * len(selections) + sel_idx) % len(PALETTE)]
+                        if step is None:
+                            run_label = label
                         else:
-                            ax.plot(dsa[order], val[order], color=color, linewidth=2, label=label)
-                            plotted = True
-                        if delta_ax is not None:
-                            dval = read_quantity_delta(ds_nc, base, suffix, window, convert_ev)
-                            if dval is not None:
-                                delta_ax.plot(dsa[order], dval[order], color=color,
-                                              linewidth=2, label=label)
-                                delta_plotted = True
+                            shown = step % nt if nt else step
+                            run_label = f"{label} @ step {shown}"
+                        try:
+                            if species_resolved:
+                                series = read_species_quantity(
+                                    ds_nc, base, suffix, window, species_filter, len(dsa), step)
+                                if not series and not any(n.startswith(f"{base}{suffix}")
+                                                          for n in ds_nc.variables):
+                                    warn_once(f"{base}{suffix} not in {b2time_path}; skipping '{qty}' for {label}")
+                                for sp_idx, val in series:
+                                    ls, lab = series_style(sp_idx, run_label)
+                                    ax.plot(dsa[order], val[order], color=color, linestyle=ls,
+                                            linewidth=2, label=lab)
+                                    plotted = True
+                                if delta_ax is not None:
+                                    for sp_idx, dval in read_species_quantity_delta(
+                                            ds_nc, base, suffix, window, species_filter, len(dsa), step):
+                                        ls, lab = series_style(sp_idx, run_label)
+                                        delta_ax.plot(dsa[order], dval[order], color=color, linestyle=ls,
+                                                      linewidth=2, label=lab)
+                                        delta_plotted = True
+                            else:
+                                val = read_quantity(ds_nc, base, suffix, window, convert_ev, step)
+                                if val is None:
+                                    warn_once(f"{base}{suffix} not in {b2time_path}; skipping '{qty}' for {label}")
+                                else:
+                                    ax.plot(dsa[order], val[order], color=color, linewidth=2, label=run_label)
+                                    plotted = True
+                                if delta_ax is not None:
+                                    dval = read_quantity_delta(ds_nc, base, suffix, window, convert_ev, step)
+                                    if dval is not None:
+                                        delta_ax.plot(dsa[order], dval[order], color=color,
+                                                      linewidth=2, label=run_label)
+                                        delta_plotted = True
+                        except IndexError as exc:
+                            warn_once(f"{label}: {exc}; skipping")
             except OSError as exc:
                 print(f"warning: could not read {b2time_path} ({exc}), will retry", file=sys.stderr)
                 continue
@@ -357,15 +387,16 @@ def draw(fig, axes, quantities, run_dirs, labels, species_filter, window, locati
             delta_ax.axhline(0.0, color="#c3c2b7", linewidth=1, zorder=0)
             delta_ax.axvline(0.0, color="#e1e0d9", linewidth=1, zorder=0)
             delta_ax.set_xlabel(f"distance from separatrix at {location_label} [m]")
-            delta_ax.set_ylabel("last step vs prev-N avg [%]")
-            delta_ax.set_title(f"{qty} — Δ last step")
+            delta_ax.set_ylabel(f"{'step' if steps else 'last step'} vs prev-N avg [%]")
+            delta_ax.set_title(f"{qty} — Δ {'step' if steps else 'last step'}")
             delta_ax.grid(True, color="#e1e0d9", linewidth=0.8)
             if delta_ax.get_legend_handles_labels()[0]:
                 delta_ax.legend(fontsize=8)
 
     stamp = time.strftime("%H:%M:%S")
     status = "  |  ".join(status_bits)
-    fig.suptitle(f"{location_label} profiles (live, last {window} steps averaged) — {stamp}\n{status}")
+    what = f"steps {', '.join(map(str, steps))}" if steps else f"last {window} steps averaged"
+    fig.suptitle(f"{location_label} profiles (live, {what}) — {stamp}\n{status}")
     fig.canvas.draw_idle()
     return any_ok
 
@@ -394,6 +425,11 @@ def main():
                               "(3.0.9) are always plotted")
     parser.add_argument("--window", type=int, default=10,
                          help="Number of most recent timesteps to average over")
+    parser.add_argument("--steps", nargs="+", type=int, default=None,
+                         help="Time indices to plot instead of the last --window average; one "
+                              "line per index and run (Python indexing: negative counts from the "
+                              "end, so -1 is the latest step and follows the run live). "
+                              "--window then only sets the averaging span for --delta.")
     parser.add_argument("--interval", type=float, default=10.0,
                          help="Seconds between refreshes")
     parser.add_argument("--cycles", type=int, default=None,
@@ -433,7 +469,7 @@ def main():
     try:
         while plt.fignum_exists(fig.number):
             draw(fig, plot_axes, args.quantities, args.run_dirs, labels, species_filter, args.window,
-                 args.location, delta_axes=delta_axes)
+                 args.location, delta_axes=delta_axes, steps=args.steps)
             fig.tight_layout(rect=(0, 0, 1, 0.92))
             cycle += 1
             if args.cycles is not None and cycle >= args.cycles:
