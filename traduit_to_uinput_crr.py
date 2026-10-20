@@ -3,67 +3,40 @@
 Standalone script: Generate uinput.crr from traduit.out.b2us
 
 Usage:
-    traduit_to_uinput_crr.py <traduit_file> [output_file]
+    python traduit_to_uinput_crr.py <traduit_file> [output_file]
 
 If output_file is omitted, defaults to 'uinput.crr' in the same directory as traduit_file.
+Run without arguments or with -h/--help to print this text.
 
 The script extracts grid counts (nCi, nFc, nCg) from the traduit header and generates
-a pseudo carre.out file suitable for uinp input in coupled EIRENE cases. The synthetic
-file has no real geometry: it only contains cell/face flags arranged so that uinp's uincrr
-reproduces the grid counts of the unstructured grid.
+a pseudo carre.out file suitable for uinp input in coupled EIRENE cases.
 
-The number of regions is taken from the largest cvReg of the interior cells (nnreg = max(cvReg) - 1).
-Only a single-null (SN) topology, nnreg = 3, is supported; any other value is an error. The
-mesh parameters nptseg/npr and the per-region dimensions (nprad = 25, 3, 3) are fixed values
-in write_uinput_crr (AUG-representative defaults, they are not derived from the grid).
-Run without arguments or with -h/--help to print this text.
+Description:
+    uinput.crr is a pseudo carre.out. It contains no real geometry: uinp's uincrr
+    only reads it to derive NCVP/NCIP/NFCP, which reach Eirene through deck block 14.
+    The coupled b2mn aborts in test_couple unless these equal B2's nCv/nFc, so the file
+    is built backwards from the grid counts in the traduit header (the line after
+    '*cf: ... nCi,nFc ...': nCi nFc nVx nCg ...):
+
+      - n_bnd   = nCg                          (boundary / guard cells)
+      - n_degen = 4*nCi + n_bnd - 2*nFc        (degenerate faces; inverts uincrr's
+                                                face formula; error if negative)
+      - 'nreg=' is always written as 3, with 3 regions: region 1 is sized to hold
+        all the cells, regions 2 and 3 are 3x3 placeholders. The topology (SN/DN)
+        is not used: only the three counts matter, so the same file is produced
+        for any topology.
+      - 'cellflags' blocks flag exactly nCi internal cells and nCg + n_degen
+        boundary cells; 'degenerate faces' blocks mark n_degen entries.
+      - nptseg = (24, 24, 72) and npr = (12, 20, 20) only feed uinp's informational
+        block-2 sizes (AUG-representative defaults, not derived from the grid).
+
+Exit status: 0 on success, 1 on missing arguments, unreadable/malformed traduit
+header, inconsistent grid counts, or write failure.
 """
 
-import re
 import sys
 from pathlib import Path
 from typing import Tuple
-
-
-def read_traduit_cvreg_max(traduit_path: Path, nci: int) -> int:
-    """Extract the maximum cvReg value from the traduit '*cf: cv ...' block.
-
-    Returns:
-        max(cvReg) over the nci cell-data rows
-
-    Raises:
-        ValueError: if the cv-data header or cvReg column cannot be found
-    """
-    with open(traduit_path, 'r') as f:
-        tlines = f.readlines()
-
-    try:
-        hidx = next(i for i, l in enumerate(tlines)
-                    if l.strip().startswith('*cf:') and 'cvReg' in l)
-    except StopIteration:
-        raise ValueError("Could not find traduit header line with '*cf:' and 'cvReg'")
-
-    header = re.sub(r'\(:?,?[0-9]*\)', '', tlines[hidx].strip())
-    tokens = header.split()[1:]  # drop leading '*cf:'
-    if 'cvReg' not in tokens:
-        raise ValueError("cvReg column not found in traduit cv-data header")
-    reg_idx = tokens.index('cvReg')
-
-    max_reg = None
-    for j in range(hidx + 1, hidx + 1 + nci):
-        if j >= len(tlines):
-            break
-        parts = tlines[j].split()
-        if len(parts) <= reg_idx:
-            continue
-        val = int(float(parts[reg_idx]))
-        if max_reg is None or val > max_reg:
-            max_reg = val
-
-    if max_reg is None:
-        raise ValueError("Could not extract any cvReg values from traduit cv-data block")
-
-    return max_reg
 
 
 def read_traduit_grid_counts(traduit_path: Path) -> Tuple[int, int, int]:
@@ -98,7 +71,6 @@ def read_traduit_grid_counts(traduit_path: Path) -> Tuple[int, int, int]:
 def write_uinput_crr(n_cells_internal: int,
                      n_cells_total: int,
                      n_faces: int,
-                     nnreg: int,
                      nptseg: Tuple[int, int, int] = (24, 24, 72),
                      npr: Tuple[int, int, int] = (12, 20, 20)) -> str:
     """Generate pseudo carre.out content.
@@ -112,7 +84,6 @@ def write_uinput_crr(n_cells_internal: int,
         n_cells_internal: nCi from traduit (internal cells)
         n_cells_total: nCv from traduit (internal + guard cells)
         n_faces: nFc from traduit (total faces)
-        nnreg: number of regions (3 for SN)
         nptseg: toroidal segment counts per region (default: AUG-representative)
         npr: radial/poloidal point counts per region (default: AUG-representative)
         
@@ -150,14 +121,14 @@ def write_uinput_crr(n_cells_internal: int,
         lines.append(f"nptseg({i}) = {v:2d}")
     for i, v in enumerate(npr, start=1):
         lines.append(f"npr({i}) ={v:3d}")
-    lines.append(f"'nreg='{nnreg:5d}")
-
+    lines.append(f"'nreg='{3:5d}")
+    
     # Distribute cells across regions
     remaining_int = n_int
     remaining_bnd = n_bnd + n_degen      # raw flags; uincrr subtracts ndfaces
     remaining_deg = n_degen
-
-    for reg in range(nnreg):
+    
+    for reg in range(3):
         lines.append(f"'region:'{reg+1:5d}")
         lines.append(f"'nppol='{nppol[reg]:5d}  'nprad='{nprad[reg]:5d}")
         lines.append("'cellflags'")
@@ -197,9 +168,12 @@ def write_uinput_crr(n_cells_internal: int,
 
 def main():
     """Entry point: parse arguments and generate uinput.crr."""
-    if len(sys.argv) < 2 or sys.argv[1] in ('-h', '--help'):
+    if len(sys.argv) >= 2 and sys.argv[1] in ("-h", "--help"):
         print(__doc__)
-        sys.exit(1 if len(sys.argv) < 2 else 0)
+        sys.exit(0)
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
     
     traduit_path = Path(sys.argv[1])
     
@@ -225,28 +199,12 @@ def main():
     print(f"  nFc (total faces)    = {nfc}")
     print(f"  nCg (guard cells)    = {ncg}")
     print(f"  nCv (total cells)    = {nci + ncg}")
-
-    # Derive number of radial regions from max(cvReg)
-    try:
-        max_cvreg = read_traduit_cvreg_max(traduit_path, nci)
-    except ValueError as e:
-        print(f"Error reading cvReg from traduit file: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    nnreg = max_cvreg - 1
-    if nnreg == 3:
-        print(f"NNREG = {nnreg}, thus SN topology")
-    else:
-        print(f"Error: NNREG = {nnreg} (from max(cvReg)={max_cvreg}) is not supported. "
-              "Only SN topology (NNREG=3) is currently supported.", file=sys.stderr)
-        sys.exit(1)
-
+    
     # Generate uinput.crr
     try:
         uinput_crr = write_uinput_crr(n_cells_internal=nci,
                                       n_cells_total=nci + ncg,
-                                      n_faces=nfc,
-                                      nnreg=nnreg)
+                                      n_faces=nfc)
     except ValueError as e:
         print(f"Error generating uinput.crr: {e}", file=sys.stderr)
         sys.exit(1)
