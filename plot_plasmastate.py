@@ -36,6 +36,21 @@ Usage:
     plot_plasmastate.py --limits -q te,ti,na:1,ua:1,po -l    # where each quantity sits on a limit of the code
     plot_plasmastate.py --limits -q te --tol 1e-6 --b2mn ../b2mn.dat 0011
 
+Face-based blocks (fluxes fhi, fhe, fch, fna:IDX, ... and velocities vaecrb:IDX, ...) can be shown in three ways:
+    --faces            every face as a coloured line segment (colour = signed face value; fluxes are integrated over
+                       the face, fhi/fhe in W). Also the default when -q names only face-based blocks.
+    --div              net flux OUT of each cell (sum over its faces; > 0: net outflow), on the cell polygons
+    -v NAME[:IDX]      streamlines of the cell-averaged vector of a face block on top of the -q maps
+Layout, as used by b2ursd: file order [all faces comp 0][all faces comp 1], face value = comp0 + comp1 (--comp 0|1
+keeps one), positive from cell fcCv(f,1) to fcCv(f,2). Signed colours on a symmetric log scale (linear within +-1e-6 of
+the largest |value|, or of --vmax); the terminal shows the largest |value| and its face/cell index (0-based).
+    plot_plasmastate.py -q fhi,fhe 0011                 # faces (default for a face block)
+    plot_plasmastate.py -q fhi --div 0011               # net outflow of fhi per cell
+    plot_plasmastate.py -q fna:1 --comp 1 0011          # only component 1 of the D+ particle flux
+    plot_plasmastate.py -q te -v fna:1 0011             # Te map with D+ particle-flux streamlines
+--wall [FILE] draws the wall (structure.dat) on the maps and face views.
+(plot_plasmastate_flux.py was merged into this script; plot_b2fstate.py shows the same for finished runs.)
+
 --limits draws, for every -q quantity, a map of the cells whose value is within --tol (relative, default
 1e-3) of a min (blue) or max (red) limit that B2.5 enforces. The limits are read from b2mn.dat
 (./b2mn.dat, or --b2mn), with the code defaults for anything not set there. If the quantity has a limit
@@ -55,17 +70,16 @@ import argparse
 import glob
 import os
 import re
-import shutil
-import struct
-import subprocess
 import sys
-import tempfile
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import PolyCollection
 from matplotlib.colors import LogNorm, Normalize, TwoSlopeNorm
+
+from solpsplt import build_polygons, read_cf, read_plasmastate, valid_cells  # noqa: F401  (re-exported: other scripts import them from here)
+from solpsplt.draw import setup_display, show_figures  # noqa: F401
 
 EV = 1.602176634e-19
 
@@ -79,75 +93,6 @@ FIELDS = {
     'ua': ('ua', 'm/s', 1.0),
     'po': ('po', 'V', 1.0),
 }
-
-
-def read_plasmastate(fn):
-    out = {}
-    with open(fn, 'rb') as f:
-        def rec():
-            h = f.read(4)
-            if len(h) < 4:
-                return None
-            n = struct.unpack('<i', h)[0]
-            d = f.read(n)
-            f.read(4)
-            return d
-        rec()  # version string
-        while True:
-            h = rec()
-            if h is None:
-                break
-            typ = h[8:16].decode().strip()
-            cnt = struct.unpack('<i', h[16:20])[0]
-            name = h[20:].decode().strip()
-            d = rec() if cnt > 0 else b''
-            if typ == 'real':
-                out[name] = np.frombuffer(d, '<f8')
-            elif typ == 'int':
-                out[name] = np.frombuffer(d, '<i4')
-    return out
-
-
-def read_cf(fn, want):
-    """Minimal reader for formatted B2.5 '*cf:' files, only the arrays in `want`."""
-    d = {}
-    with open(fn) as f:
-        lines = f.read().split('\n')
-    i = 1
-    while i < len(lines):
-        if not lines[i].startswith('*cf:'):
-            i += 1
-            continue
-        p = lines[i].split()
-        typ, n, name = p[1], int(p[2]), p[3]
-        i += 1
-        if typ == 'char':
-            i += 1
-            continue
-        vals = []
-        while len(vals) < n:
-            vals += lines[i].split()
-            i += 1
-        if name in want:
-            d[name] = np.array(vals, dtype=float if typ == 'real' else int)
-    return d
-
-
-def build_polygons(geo):
-    nCv = len(geo['cvX'])
-    start = geo['cvVxP'][:nCv] - 1
-    count = geo['cvVxP'][nCv:]
-    vx = np.column_stack([geo['vxX'], geo['vxY']])
-    polys, ok = [], np.zeros(nCv, bool)
-    for c in range(nCv):
-        if count[c] < 3:
-            polys.append(np.zeros((3, 2)))
-            continue
-        p = vx[geo['cvVx'][start[c]:start[c] + count[c]] - 1]
-        ang = np.arctan2(p[:, 1] - p[:, 1].mean(), p[:, 0] - p[:, 0].mean())
-        polys.append(p[np.argsort(ang)])
-        ok[c] = True
-    return polys, ok
 
 
 def kind(name, v, nCv):
@@ -199,39 +144,6 @@ def get_quantity(ps, spec, nCv, zamin):
         print(f"note: '{name}' is species-resolved, showing species 0 (use -q {name}:IDX)")
     z = f', zamin={zamin[i]:g}' if zamin is not None and len(zamin) == ns else ''
     return f'{label}[{i}{z}]', unit, v.reshape(ns, nCv)[i] * fac
-
-
-def setup_display(save, out):
-    """Choose the matplotlib backend; return a temp dir if figures must go through files for VS Code."""
-    if save:
-    
-        matplotlib.use('Agg')
-        os.makedirs(out, exist_ok=True)
-        return None
-    # same backend as the other scripts here; fall back if Tk can't open a window
-    try:
-        matplotlib.use('TkAgg', force=True)
-        import tkinter
-        tkinter.Tk().destroy()
-        return None
-    except Exception:
-        matplotlib.use('Agg', force=True)
-        return tempfile.mkdtemp(prefix='plasmastate_')
-
-
-def show_figures(save, tmpdir, shown):
-    if tmpdir:
-        code = shutil.which('code')
-        if code:
-            subprocess.run([code, '-r', *shown], check=False)
-        print('No display available; figures written to', tmpdir)
-    elif not save:
-        plt.show()
-
-
-def valid_cells(geo):
-    """Mask of cells with at least 3 vertices (the rest are degenerate/boundary placeholders)."""
-    return geo['cvVxP'][len(geo['cvX']):] >= 3
 
 
 MP = 1.67262192369e-27   # proton mass [kg]
@@ -397,8 +309,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('ids', nargs='*', help="plasmastate suffixes, e.g. 0012, or 'latest' (default: all)")
     ap.add_argument('-l', '--latest', action='store_true', help='only the most recent plasmastate file')
-    ap.add_argument('-q', '--quantity', default='te,ti',
-                    help="comma-separated fields, NAME or NAME:IDX for species-resolved (default: te,ti)")
+    ap.add_argument('-q', '--quantity', default=None,
+                    help="comma-separated fields, NAME or NAME:IDX for species-resolved (default: te,ti; fhi with --faces/--div)")
     ap.add_argument('--list', action='store_true', help='list the fields in the plasmastate file and exit')
     ap.add_argument('-d', '--dir', default=os.path.join(here, 'b2mn.exe.dir'),
                     help='directory with the plasmastate.XXXX files (default: ./b2mn.exe.dir)')
@@ -412,12 +324,23 @@ def main():
     ap.add_argument('--vmax', type=float, default=None, help='upper colour limit, in the units shown in the title')
     ap.add_argument('--zoom', nargs=4, type=float, metavar=('XMIN', 'XMAX', 'YMIN', 'YMAX'),
                     help='plot window in m: R range then Z range (default: whole mesh)')
+    ap.add_argument('--wall', nargs='?', const='auto', metavar='FILE',
+                    help='draw the wall: the structure.dat found next to the geometry (or in the current directory), or FILE')
+    ap.add_argument('--faces', action='store_true', help='draw face blocks (fhi, fna:IDX, ...) as coloured face segments')
+    ap.add_argument('--div', action='store_true', help='net outflow per cell of face blocks instead of face segments')
+    ap.add_argument('--comp', type=int, choices=(0, 1), default=None,
+                    help='face blocks: use only this flux component (default: comp0 + comp1)')
+    ap.add_argument('-v', '--vector', default=None, metavar='NAME[:IDX]',
+                    help='overlay streamlines of this face block (e.g. fna:1) on the -q maps')
+    ap.add_argument('--density', type=float, default=1.0, help='streamline density for -v (default: 1)')
     ap.add_argument('--limits', action='store_true',
                     help='for each -q quantity, plot where it sits on a min/max limit of the code')
     ap.add_argument('--b2mn', default=os.path.join(here, 'b2mn.dat'),
                     help='b2mn.dat to read the limits from (default: ./b2mn.dat)')
     ap.add_argument('--tol', type=float, default=1e-3,
                     help='relative distance to a limit that counts as on it (default: 1e-3)')
+    # accept negative numbers in exponent notation as values (--vmin -2e4), not as options
+    ap._negative_number_matcher = re.compile(r'^-(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$')
     a = ap.parse_args()
 
     allfiles = sorted(glob.glob(os.path.join(a.dir, 'plasmastate.*')),
@@ -438,7 +361,15 @@ def main():
     if a.list:
         list_fields(read_plasmastate(files[0]), nCv, zamin)
         return
+    face_mode = a.faces or a.div
+    if a.quantity is None:
+        a.quantity = 'fhi' if face_mode else 'te,ti'
     specs = [s.strip() for s in a.quantity.split(',') if s.strip()]
+    if not face_mode and not a.limits:
+        # a -q that names only face-based blocks (fhi, fna:1, ...) is shown as faces, as plot_plasmastate_flux.py did
+        ps0 = read_plasmastate(files[0])
+        names = [x.partition(':')[0] for x in specs]
+        face_mode = a.faces = all(n in ps0 and len(ps0[n]) > nCv and kind(n, ps0[n], nCv) is None for n in names)
 
     polys, ok = build_polygons(geo)
     sel = np.flatnonzero(ok)
@@ -456,6 +387,68 @@ def main():
             png = plot_limits(fn, read_plasmastate(fn), geo, polys, sel, specs, par, st.get('am'),
                               st.get('zamin'), a.tol, a, tmpdir)
             if png:
+                shown.append(png)
+        show_figures(a.save, tmpdir, shown)
+        return
+
+    wall = None
+    if a.wall:
+        from solpsplt import find_structure, read_structures
+        from solpsplt.draw import draw_wall
+        wf = a.wall if a.wall != 'auto' else (find_structure(os.path.dirname(os.path.abspath(a.geometry)))
+                                              or find_structure(here))
+        if wf is None:
+            print('WARNING: no structure.dat found (use --wall FILE), no wall drawn')
+        else:
+            wall = read_structures(wf)
+            print(f'wall: {wf}')
+
+    mesh = None                                      # solpsplt mesh, only needed for face blocks / streamlines
+    if face_mode or a.vector:
+        from solpsplt import State, open_mesh
+        from solpsplt.draw import draw_divergence, draw_faces, draw_streams
+        mesh = open_mesh(a.geometry)
+
+    def face_field(ps, spec):
+        name, _, idx = spec.partition(':')
+        try:
+            return name + (f'[{idx}]' if idx else ''), State.from_blocks(mesh, ps).faces(name, int(idx or 0), a.comp)
+        except KeyError as e:
+            sys.exit(f"{e.args[0]} (see --list)")
+
+    if face_mode:
+        for fn in files:
+            tag = fn.rsplit('.', 1)[1]
+            ps = read_plasmastate(fn)
+            t = float(ps['time'][0]) if 'time' in ps else np.nan
+            fig, axs = plt.subplots(1, len(specs), figsize=(5.5 * len(specs) + 1, 8), sharey=True,
+                                    constrained_layout=True, squeeze=False)
+            for ax, spec in zip(axs[0], specs):
+                label, F = face_field(ps, spec)
+                if a.div:
+                    vs, title = F.divergence(), f'net outflow of {label}'
+                    col = draw_divergence(ax, polys, vs, a.vmax)
+                else:
+                    segs, vs = F.segments(a.comp)
+                    title = f'{label} (+: cell1 -> cell2)'
+                    col = draw_faces(ax, segs, vs, a.vmax)
+                if wall:
+                    draw_wall(ax, wall)
+                ax.set_aspect('equal')
+                ax.set_xlim(*(a.zoom[:2] if a.zoom else mesh.extent[:2]))
+                ax.set_ylim(*(a.zoom[2:] if a.zoom else mesh.extent[2:]))
+                ax.set_title(f'{title}\n(plasmastate.{tag}, t={t:.4g} s)')
+                ax.set_xlabel('R [m]')
+                fig.colorbar(col, ax=ax, shrink=0.8)
+                i = int(np.argmax(np.abs(vs)))
+                print(f'{fn} {title}: |max| = {vs[i]:.4g} at index {i}')
+            axs[0][0].set_ylabel('Z [m]')
+            if a.save or tmpdir:
+                png = os.path.join(a.out if a.save else tmpdir,
+                                   f'{"_".join(x.replace(":", "") for x in specs)}'
+                                   f'{"_div" if a.div else "_faces"}_{tag}.png')
+                fig.savefig(png, dpi=130)
+                plt.close(fig)
                 shown.append(png)
         show_figures(a.save, tmpdir, shown)
         return
@@ -494,6 +487,11 @@ def main():
                 cmap = 'inferno'
             pc = PolyCollection(polys, array=vs, norm=norm, cmap=cmap, edgecolors='none')
             ax.add_collection(pc)
+            if wall:
+                draw_wall(ax, wall)
+            if a.vector:
+                vec = face_field(ps, a.vector)[1].cell_vectors()
+                draw_streams(ax, polys, mesh.centres, vec, a.zoom, a.density)
             ax.set_aspect('equal')
             ax.set_xlim(*(a.zoom[:2] if a.zoom else (np.min(geo['vxX']), np.max(geo['vxX']))))
             ax.set_ylim(*(a.zoom[2:] if a.zoom else (np.min(geo['vxY']), np.max(geo['vxY']))))

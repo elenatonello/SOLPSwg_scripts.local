@@ -5,8 +5,7 @@ its full usage with `-h` / `--help`; the details below are only an overview.
 
 ## Requirements
 
-- Python 3 with `numpy`, `matplotlib` and `netCDF4` (`scipy` is optional: only used by
-  `plot_b2fstate_us.py --tri`).
+- Python 3 with `numpy`, `matplotlib` and `netCDF4` (`scipy` is not needed).
 - Most plotting scripts open a Tk window (`ssh -X` or a local display). Without a display some of
   them write PNG files instead (see each `--help`); `--save` always writes files.
 - Unless stated otherwise, **run the scripts from the run directory**
@@ -47,9 +46,8 @@ its full usage with `-h` / `--help`; the details below are only an overview.
 
 | Script | What it does |
 |---|---|
-| `plot_plasmastate.py` | Cell-centred plasmastate fields on the 2D mesh; `--limits` shows the cells sitting on a limit enforced by B2.5. Its reader and polygon helpers are imported by several other scripts. |
-| `plot_plasmastate_flux.py` | Face fluxes (fhi, fhe, fna:IDX, ...) on the mesh, or their divergence per cell. |
-| `plot_b2fstate_us.py` | Quick scatter / tripcolor of a field of an unstructured `b2fstate`. Uses `plotter.py`. |
+| `plot_b2fstate.py` | 2D maps of the final state (`b2fstate`) of one or several runs, structured (3.0.9) and unstructured (3.2.1) side by side, also from a single state file (`-g` for its geometry). Any cell scalar (`-q ne te ua ...`, species with `-s`, default 1 = D+) plus a face-based vector (`-v fna fhi vaecrb ...`) as streamlines, direction arrows, the face values themselves or the net outflow per cell (`--mode`). `--wall` draws the wall from the run's `structure.dat` (Carre format; looked for in the run, its `baserun/` and the family directory). `--list` shows the blocks of a state. Replaces `plot_b2fstate_us.py`. |
+| `plot_plasmastate.py` | The same for the `plasmastate.XXXX` snapshots of a *running* job (monitoring / debugging): cell fields on the 2D mesh with max / min markers, `--limits` shows the cells sitting on a limit enforced by B2.5, `--faces` / `--div` draw face blocks (fhi, fhe, fna:IDX, ...) as face segments or net outflow per cell, `-v NAME:IDX` adds streamlines, `--wall` the wall. Replaces `plot_plasmastate_flux.py`. |
 | `plot_qalf_wall.py` | Classifies the wall faces (grazing / band / normal) from Qalf and Pbs, compares with an original geometry (`--ref`) and shows the boundary conditions that result (`--show bc`). |
 
 ## Balances (read `b2tallies.nc`)
@@ -63,7 +61,19 @@ its full usage with `-h` / `--help`; the details below are only an overview.
 
 ## Libraries and notes
 
-- `b2state_io.py`, `plotter.py`: imported by other scripts, not run directly.
+- `solpsplt/`: the shared code of the plotting tools (readers for `b2fstate` / `plasmastate` / `b2fgmtry`, structured and
+  unstructured meshes, face fluxes -> cell vectors, streamlines, display handling). `scripts.local` is on `PYTHONPATH`, so
+  `import solpsplt` works anywhere:
+
+  ```python
+  import solpsplt as sp
+  st = sp.State.from_run('path/to/run')        # b2fstate; plasmastate: source='plasmastate', snap='0015'
+  te = st.scalar('te'); na = st.scalar('na', 4)           # interior cells, Te in eV; species 4 = C2+
+  vec = st.faces('fna', 1).cell_vectors()                 # D+ particle flux density vector per cell, (R, Z)
+  st.mesh.polys, st.mesh.centres                          # cell polygons / centres, same order as the values
+  ```
+  Structured runs need the topology (`rightix`, `topix`, ...) of the `b2fgmtry`; they are read from it.
+- `b2state_io.py`: imported by `generate_initialState_us.py` and `write_b2transport_parameters.py`, not run directly.
 - `sketch_qalf_pbs.py`, `sketch_qalf_regimes.py`: schematic figures of Qalf / Pbs and the regimes
   (no input needed). Background in `qalf_pbs_notes.pdf` (source: `.tex`).
 - `doc/goat_inputs_procedure.tex`: procedure for generating the GOAT inputs and checking the grid.

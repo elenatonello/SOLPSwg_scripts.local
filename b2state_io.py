@@ -3,7 +3,8 @@
 
 Library (not a command-line tool) with the B2StateIO helper class for reading and
 writing SOLPS `b2fstate` / `b2fgmtry` formatted text files, structured and unstructured.
-Imported by generate_initialState_us.py and plot_b2fstate_us.py.
+Imported by generate_initialState_us.py and write_b2transport_parameters.py (plot_b2fstate.py reads state files with
+the solpsplt package instead).
 
 File format ("cf" files): an optional first line starting with VERSION, then blocks made of a
 label line (`*cf: <type> <count> <name>`, or just the name) followed by the values, several per
