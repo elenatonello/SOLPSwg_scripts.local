@@ -26,7 +26,14 @@ velocity blocks of unstructured runs are treated like the fluxes and are not val
 --source      auto (default): b2fstate, or for an unstructured run whose b2fstate is only the stub of a running job the
               latest plasmastate.NNNN;  b2fstate;  plasmastate (--snap NNNN);  aver (time-averaged scalars).
 
-Without -o the figure is shown in a window, or opened in VS Code when there is no display.
+--line R0 Z0 R1 Z1   also plot the scalars along the straight line (R0, Z0) -> (R1, Z1) in a second figure, one panel per
+              row, the runs overlaid: the line is marked on the maps. --line-species picks the species (default: all
+              rows), --line-method linear (default, interpolation between cell centres) or cell (value of the cell),
+              --line-n the number of points, --line-x R|Z|s the abscissa (default R for a horizontal line, Z for a
+              vertical one, else the distance s). Gaps in a profile: the line leaves the mesh of that run.
+
+Without -o the figure(s) are shown in a window, or opened in VS Code when there is no display (-o FILE.png writes
+FILE.png and FILE_profile.png).
 
 Examples:
     plot_b2fstate.py RUN_A RUN_B -q te -v fna                  # Te map + D+ particle-flux streamlines
@@ -36,6 +43,7 @@ Examples:
     plot_b2fstate.py RUN -v fna --mode div                     # net D+ particle outflow per cell
     plot_b2fstate.py RUN -v fhi --mode faces --comp 1 -s 0
     plot_b2fstate.py b2fstate_new -g b2fgmtry_us -q ne te      # an explicit state file + geometry
+    plot_b2fstate.py RUN_A RUN_B -q ua -s 1 --line 0.8 -0.6 1.0 -0.6   # D+ ua along a horizontal line
     plot_b2fstate.py RUN --list                                # blocks available in the state file
 """
 import argparse
@@ -83,6 +91,12 @@ def main():
     ap.add_argument('--res', type=float, default=0.003, help='stream: grid spacing in m (default 0.003)')
     ap.add_argument('--stride', type=int, default=2, help='arrows/quiver: every N-th cell (default 2)')
     ap.add_argument('--alen', type=float, default=0.03, help='arrows/quiver: arrow length in m (default 0.03)')
+    ap.add_argument('--line', nargs=4, type=float, metavar=('R0', 'Z0', 'R1', 'Z1'),
+                    help='scalars along the straight line (R0, Z0) -> (R1, Z1), in a second figure (see above)')
+    ap.add_argument('--line-species', nargs='*', type=int, help='species shown in the line profiles (default: all rows)')
+    ap.add_argument('--line-method', choices=['linear', 'cell'], default='linear')
+    ap.add_argument('--line-n', type=int, default=200, help='points along the line (default 200)')
+    ap.add_argument('--line-x', choices=['auto', 'R', 'Z', 's'], default='auto', help='abscissa of the line profiles')
     ap.add_argument('--list', action='store_true', help='list the scalar and face blocks of each run and exit')
     ap.add_argument('-o', '--output', help='save to this image (png/pdf) instead of showing it')
     # accept negative numbers in exponent notation as values (--vmin -2e4), not as options
@@ -246,6 +260,8 @@ def main():
                                              color=a.color)
                     except (KeyError, ValueError) as e:
                         print(f'WARNING {label}: no overlay ({e})')
+            if a.line:
+                ax.plot([a.line[0], a.line[2]], [a.line[1], a.line[3]], '--', color='#d81b60', lw=1.5, zorder=6)
             if label in walls:
                 draw.draw_wall(ax, walls[label])
             finish_axes(ax, st, i, j, m.extent)
@@ -264,16 +280,73 @@ def main():
         what = {'stream': 'streamlines', 'arrows': 'direction arrows', 'quiver': 'arrows ~ vector'}[a.mode]
         fig.supxlabel(f'{what}: {vl} (cell-centred vector, see --help)', fontsize=7, color='grey')
 
+    figures = [(fig, 'plot_b2fstate.png', a.output)]
+    if a.line and not face_mode:
+        pf = line_figure(plt, states, live, rows, a, resolved)
+        if pf is not None:
+            out = None
+            if a.output:
+                o = Path(a.output)
+                out = str(o.with_name(o.stem + '_profile' + (o.suffix or '.png')))
+            figures.append((pf, 'plot_b2fstate_profile.png', out))
+    elif a.line:
+        print('note: --line is ignored for --mode faces/div')
+
     if a.output:
-        fig.savefig(a.output)
-        print('wrote', a.output)
+        for f, _, out in figures:
+            f.savefig(out)
+            print('wrote', out)
     elif tmpdir:
-        out = str(Path(tmpdir) / 'plot_b2fstate.png')
-        fig.savefig(out)
-        draw.show_figures(False, tmpdir, [out])
+        paths = []
+        for f, name, _ in figures:
+            paths.append(str(Path(tmpdir) / name))
+            f.savefig(paths[-1])
+        draw.show_figures(False, tmpdir, paths)
     else:
         plt.show()
 
+
+def line_figure(plt, states, live, rows, a, resolved):
+    """Figure with the scalars of the rows (all runs overlaid) along the line a.line."""
+    from solpsplt.sample import line_profile
+    R0, Z0, R1, Z1 = a.line
+    prow = [(q, s) for q, s in rows if a.line_species is None or not resolved(q, 'scalar') or s in a.line_species]
+    if not prow:
+        print('note: --line-species selects no row, no line profile')
+        return None
+    xsel = a.line_x if a.line_x != 'auto' else ('R' if Z0 == Z1 else 'Z' if R0 == R1 else 's')
+    xlabel = {'R': 'R [m]', 'Z': 'Z [m]', 's': f'distance along the line from (R, Z) = ({R0:g}, {Z0:g}) [m]'}[xsel]
+    units = {'te': 'eV', 'ti': 'eV', 'tn': 'eV', 'ua': 'm/s', 'ne': 'm$^{-3}$', 'na': 'm$^{-3}$', 'po': 'V'}
+    colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    pf, axs = plt.subplots(len(prow), 1, figsize=(6.4, 3.3 * len(prow)), squeeze=False, sharex=True,
+                           constrained_layout=True)
+    for k, (name, s) in enumerate(prow):
+        ax = axs[k][0]
+        signed = False
+        for j, (label, st) in enumerate(states):
+            if st is None:
+                continue
+            try:
+                vals = st.scalar(name, s)
+            except (KeyError, ValueError) as e:
+                print(f'WARNING {label}: {name}: {e}')
+                continue
+            sd, pts, v = line_profile(st.mesh, vals, (R0, Z0), (R1, Z1), a.line_n, a.line_method)
+            x = {'R': pts[:, 0], 'Z': pts[:, 1], 's': sd}[xsel]
+            ax.plot(x, v, color=colors[j % len(colors)], label=label)
+            signed |= bool(np.nanmin(v) < 0 < np.nanmax(v)) if np.isfinite(v).any() else False
+            if k == 0:
+                print(f'line profile, {label}: {np.isfinite(v).mean() * 100:.0f}% of the line is inside the mesh')
+        if signed:
+            ax.axhline(0, color='grey', lw=0.7, zorder=0)
+        sp = f' {live[0].species_name(s)}' if resolved(name, 'scalar') else ''
+        ax.set_ylabel(f"{name}{sp} [{units[name]}]" if name in units else f'{name}{sp}')
+        ax.grid(alpha=0.25)
+        ax.set_xlim(*sorted((x[0], x[-1])))
+    axs[0][0].legend(frameon=False)
+    axs[-1][0].set_xlabel(xlabel)
+    pf.suptitle(f'along the line ({R0:g}, {Z0:g}) -> ({R1:g}, {Z1:g})', fontsize=10)
+    return pf
 
 if __name__ == '__main__':
     main()
